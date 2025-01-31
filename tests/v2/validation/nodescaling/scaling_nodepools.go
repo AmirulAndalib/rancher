@@ -3,15 +3,15 @@ package nodescaling
 import (
 	"testing"
 
+	"github.com/rancher/rancher/tests/v2/actions/machinepools"
+	"github.com/rancher/rancher/tests/v2/actions/provisioning"
+	rke1 "github.com/rancher/rancher/tests/v2/actions/rke1/nodepools"
+	"github.com/rancher/rancher/tests/v2/actions/workloads/pods"
 	"github.com/rancher/shepherd/clients/rancher"
 	"github.com/rancher/shepherd/extensions/clusters"
 	"github.com/rancher/shepherd/extensions/clusters/aks"
 	"github.com/rancher/shepherd/extensions/clusters/eks"
 	"github.com/rancher/shepherd/extensions/clusters/gke"
-	"github.com/rancher/shepherd/extensions/machinepools"
-	"github.com/rancher/shepherd/extensions/provisioning"
-	rke1 "github.com/rancher/shepherd/extensions/rke1/nodepools"
-	"github.com/rancher/shepherd/extensions/workloads/pods"
 	"github.com/stretchr/testify/require"
 )
 
@@ -27,6 +27,10 @@ func scalingRKE2K3SNodePools(t *testing.T, client *rancher.Client, clusterID str
 	cluster, err := client.Steve.SteveType(ProvisioningSteveResourceType).ByID(clusterID)
 	require.NoError(t, err)
 
+	if nodeRoles.Windows {
+		nodeRoles.Quantity++
+	}
+
 	clusterResp, err := machinepools.ScaleMachinePoolNodes(client, cluster, nodeRoles)
 	require.NoError(t, err)
 
@@ -35,7 +39,12 @@ func scalingRKE2K3SNodePools(t *testing.T, client *rancher.Client, clusterID str
 	updatedCluster, err := client.Steve.SteveType(ProvisioningSteveResourceType).ByID(clusterID)
 	require.NoError(t, err)
 
-	nodeRoles.Quantity = -nodeRoles.Quantity
+	if nodeRoles.Windows {
+		nodeRoles.Quantity--
+	} else {
+		nodeRoles.Quantity = -nodeRoles.Quantity
+	}
+
 	scaledClusterResp, err := machinepools.ScaleMachinePoolNodes(client, updatedCluster, nodeRoles)
 	require.NoError(t, err)
 

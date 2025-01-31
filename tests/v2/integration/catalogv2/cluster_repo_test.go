@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -29,6 +31,7 @@ import (
 	"github.com/rancher/shepherd/pkg/api/steve/catalog/types"
 	"github.com/rancher/shepherd/pkg/session"
 	rancherWait "github.com/rancher/shepherd/pkg/wait"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -41,6 +44,7 @@ import (
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/kubernetes"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/util/retry"
 	"oras.land/oras-go/v2"
 	"oras.land/oras-go/v2/content/memory"
 )
@@ -50,9 +54,11 @@ const (
 	LatestHTTPRepoURL   = "https://releases.rancher.com/server-charts/latest"
 	StableHTTPRepoURL   = "https://releases.rancher.com/server-charts/stable"
 
+	GitClusterSmallForkName = "test-git-small-fork-cluster-repo"
+	GitClusterSmallForkURL  = "https://github.com/rancher/charts-small-fork"
 	GitClusterRepoName      = "test-git-cluster-repo"
-	RancherChartsGitRepoURL = "https://git.rancher.io/charts"
-	RKE2ChartsGitRepoURL    = "https://git.rancher.io/rke2-charts"
+	RancherChartsGitRepoURL = "https://github.com/rancher/charts"
+	RKE2ChartsGitRepoURL    = "https://github.com/rancher/rke2-charts"
 
 	OCIClusterRepoName = "test-oci-cluster-repo"
 )
@@ -112,6 +118,7 @@ type ClusterRepoParams struct {
 	InsecurePlainHTTP bool
 	StatusCode        int
 	ForceRefresh      bool
+	StatusCodeMessage string
 }
 
 // TestHTTPRepo tests CREATE, UPDATE, and DELETE operations of HTTP ClusterRepo resources
@@ -134,30 +141,59 @@ func (c *ClusterRepoTestSuite) TestGitRepo() {
 	})
 }
 
-func StartRegistry() (*url.URL, error) {
-	s := httptest.NewServer(registryGoogle.New())
-	u, err := url.Parse(s.URL)
+func (c *ClusterRepoTestSuite) TestGitRepoRetries() {
+	c.testClusterRepoRetries(ClusterRepoParams{
+		Name: GitClusterSmallForkName,
+		URL1: GitClusterSmallForkURL,
+		Type: Git,
+	})
+}
+
+func StartRegistry() (*httptest.Server, error) {
+	// Create a new registry handler
+	handler := registryGoogle.New()
+
+	// Optionally, you can customize the handler here if needed
+	// e.g., add middleware, logging, etc.
+	customHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		logrus.Infof("Received request: %s %s", r.Method, r.URL)
+		handler.ServeHTTP(w, r)
+	})
+
+	// Create a new test server
+	ts := httptest.NewUnstartedServer(customHandler)
+
+	ip := getOutboundIP()
+	// Bind the server to a specific IP address (your local machine's IP)
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:4050", ip.String()))
 	if err != nil {
 		return nil, err
 	}
+	ts.Listener = listener
+	ts.Start()
 
-	return u, nil
+	return ts, nil
 }
 
-func StartErrorRegistry(status int) (*url.URL, error) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func StartErrorRegistry(c *ClusterRepoTestSuite, status int) (*url.URL, error) {
+	// Start a new server
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 	}))
+	ip := getOutboundIP()
+	// Bind the server to a specific IP address (your local machine's IP)
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:0", ip.String()))
+	assert.NoError(c.T(), err)
+	ts.Listener = listener
+	ts.Start()
 
 	u, err := url.Parse(ts.URL)
-	if err != nil {
-		return nil, err
-	}
+	assert.NoError(c.T(), err)
 
 	return u, nil
 }
 
-func Start429Registry(t assert.TestingT, rateLimitedHeader bool) (*url.URL, error) {
+func Start429Registry(t assert.TestingT, rateLimitedHeader bool) (*httptest.Server, error) {
 	testingChartPath := "../../../testdata/testingchart-0.1.0.tgz"
 	testChartPath := "../../../testdata/testchart-1.0.0.tgz"
 	helmChartTar, err := os.ReadFile(testingChartPath)
@@ -215,7 +251,7 @@ func Start429Registry(t assert.TestingT, rateLimitedHeader bool) (*url.URL, erro
 	timerStart := false
 
 	// Create an OCI Registry Server
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	customHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		switch r.URL.Path {
 		case "/v2/testingchart/tags/list":
@@ -280,14 +316,22 @@ func Start429Registry(t assert.TestingT, rateLimitedHeader bool) (*url.URL, erro
 			}
 
 		}
-	}))
+	})
 
-	u, err := url.Parse(ts.URL)
+	// Create a new test server
+	ts := httptest.NewUnstartedServer(customHandler)
+
+	ip := getOutboundIP()
+	// Bind the server to a specific IP address (your local machine's IP)
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:0", ip.String()))
 	if err != nil {
+		log.Printf("Failed to bind to local IP: %v", err)
 		return nil, err
 	}
+	ts.Listener = listener
+	ts.Start()
 
-	return u, nil
+	return ts, nil
 }
 
 func AddHelmChart(u *url.URL) error {
@@ -354,12 +398,17 @@ func AddHelmChart(u *url.URL) error {
 // TestOCIRepo tests CREATE, UPDATE, and DELETE operations of OCI ClusterRepo resources
 func (c *ClusterRepoTestSuite) TestOCIRepo() {
 	//start registry
-	u, err := StartRegistry()
+	ts, err := StartRegistry()
 	assert.NoError(c.T(), err)
+
+	defer ts.Close()
+
+	u, err := url.Parse(ts.URL)
+	require.NoError(c.T(), err)
 
 	//push testingchart helm chart
 	err = AddHelmChart(u)
-	assert.NoError(c.T(), err)
+	require.NoError(c.T(), err)
 
 	c.testClusterRepo(ClusterRepoParams{
 		Name:              OCIClusterRepoName,
@@ -373,12 +422,17 @@ func (c *ClusterRepoTestSuite) TestOCIRepo() {
 // TestOCIRepo2 tests CREATE, UPDATE, and DELETE operations of OCI ClusterRepo additional cases
 func (c *ClusterRepoTestSuite) TestOCIRepo2() {
 	//start registry
-	u, err := StartRegistry()
+	ts, err := StartRegistry()
 	assert.NoError(c.T(), err)
+
+	defer ts.Close()
+
+	u, err := url.Parse(ts.URL)
+	require.NoError(c.T(), err)
 
 	//push testingchart helm chart
 	err = AddHelmChart(u)
-	assert.NoError(c.T(), err)
+	require.NoError(c.T(), err)
 
 	c.testClusterRepo(ClusterRepoParams{
 		Name:              OCIClusterRepoName,
@@ -392,13 +446,16 @@ func (c *ClusterRepoTestSuite) TestOCIRepo2() {
 // TestOCIRepo3 tests 4xx response codes received from the registry
 func (c *ClusterRepoTestSuite) TestOCIRepo3() {
 	statusCodes := [3]int{404, 401, 403}
-	for _, statusCode := range statusCodes {
-		u, err := StartErrorRegistry(statusCode)
-		assert.NoError(c.T(), err)
+	statusCodeMessages := [3]string{"Not Found", "Unauthorized", "Forbidden"}
+	for index, statusCode := range statusCodes {
+		u, err := StartErrorRegistry(c, statusCode)
+		require.NoError(c.T(), err)
+
 		c.test4xxErrors(ClusterRepoParams{
 			Name:              OCIClusterRepoName,
 			URL1:              fmt.Sprintf("oci://%s/rancher", u.Host),
-			StatusCode:        statusCode,
+			StatusCode:        statusCodes[index],
+			StatusCodeMessage: statusCodeMessages[index],
 			InsecurePlainHTTP: true,
 			Type:              OCI,
 		})
@@ -407,8 +464,14 @@ func (c *ClusterRepoTestSuite) TestOCIRepo3() {
 
 // TestOCIRepo4 tests 429 response code received from the registry
 func (c *ClusterRepoTestSuite) TestOCIRepo4() {
-	u, err := Start429Registry(c.T(), false)
-	assert.NoError(c.T(), err)
+	ts, err := Start429Registry(c.T(), false)
+	require.NoError(c.T(), err)
+
+	defer ts.Close()
+
+	u, err := url.Parse(ts.URL)
+	require.NoError(c.T(), err)
+
 	c.test429Error(ClusterRepoParams{
 		Name:              OCIClusterRepoName,
 		URL1:              fmt.Sprintf("oci://%s/", u.Host),
@@ -420,8 +483,14 @@ func (c *ClusterRepoTestSuite) TestOCIRepo4() {
 
 // TestOCIRepo4 tests 429 response code received from the registry which sends RateLimited-Remaining header
 func (c *ClusterRepoTestSuite) TestOCIRepo5() {
-	u, err := Start429Registry(c.T(), true)
-	assert.NoError(c.T(), err)
+	ts, err := Start429Registry(c.T(), true)
+	require.NoError(c.T(), err)
+
+	defer ts.Close()
+
+	u, err := url.Parse(ts.URL)
+	require.NoError(c.T(), err)
+
 	c.test429Error(ClusterRepoParams{
 		Name:              OCIClusterRepoName,
 		URL1:              fmt.Sprintf("oci://%s/", u.Host),
@@ -553,6 +622,12 @@ func (c *ClusterRepoTestSuite) test4xxErrors(params ClusterRepoParams) {
 
 	clusterRepo, err := c.catalogClient.ClusterRepos().Get(context.TODO(), params.Name, metav1.GetOptions{})
 	assert.NoError(c.T(), err)
+	for _, condition := range clusterRepo.Status.Conditions {
+		if v1.RepoCondition(condition.Type) == v1.OCIDownloaded {
+			assert.Equal(c.T(), condition.Message, fmt.Sprintf("error %d: %s", params.StatusCode, params.StatusCodeMessage))
+		}
+	}
+	assert.Zero(c.T(), clusterRepo.Status.NumberOfRetries)
 
 	_, err = c.corev1.ConfigMaps(helm.GetConfigMapNamespace(clusterRepo.Namespace)).Get(context.TODO(), helm.GenerateConfigMapName(clusterRepo.Name, 0, clusterRepo.UID), metav1.GetOptions{})
 	assert.True(c.T(), apierrors.IsNotFound(err))
@@ -567,12 +642,15 @@ func (c *ClusterRepoTestSuite) test4xxErrors(params ClusterRepoParams) {
 // TestOCI tests creating an OCI clusterrepo and install a chart
 func (c *ClusterRepoTestSuite) TestOCIRepoChartInstallation() {
 	//start registry
-	u, err := StartRegistry()
+	ts, err := StartRegistry()
 	assert.NoError(c.T(), err)
+
+	u, err := url.Parse(ts.URL)
+	require.NoError(c.T(), err)
 
 	//push testingchart helm chart
 	err = AddHelmChart(u)
-	assert.NoError(c.T(), err)
+	require.NoError(c.T(), err)
 
 	repoName := "oci"
 
@@ -630,6 +708,15 @@ func (c *ClusterRepoTestSuite) TestOCIRepoChartInstallation() {
 		return false, nil
 	})
 	assert.NoError(c.T(), err)
+
+	appCR, err := catalogClient.Apps("default").Get(context.TODO(), "testreleasename", metav1.GetOptions{})
+	assert.NoError(c.T(), err)
+
+	// Every AppCR installed through rancher must
+	// have the catalog clusterRepoName label
+	value, ok := appCR.Labels["catalog.cattle.io/cluster-repo-name"]
+	assert.True(c.T(), ok)
+	assert.Equal(c.T(), value, "oci")
 
 	// Validate uninstalling the chart
 	chartUninstallAction := types.ChartUninstallAction{
@@ -707,6 +794,74 @@ func (c *ClusterRepoTestSuite) testClusterRepo(params ClusterRepoParams) {
 	require.Error(c.T(), err)
 }
 
+// testClusterRepoRetries takes in ClusterRepoParams and creates a ClusterRepo with a bad branch name,
+// then updates the branch name to a valid branch name after retries are done
+func (c *ClusterRepoTestSuite) testClusterRepoRetries(params ClusterRepoParams) {
+	// Create a ClusterRepo
+	cr := v1.NewClusterRepo("", params.Name, v1.ClusterRepo{})
+	setClusterRepoURL(&cr.Spec, params.Type, params.URL1)
+	cr.Spec.InsecurePlainHTTP = params.InsecurePlainHTTP
+	cr.Spec.GitBranch = "invalid-branch"
+	expoValues := v1.ExponentialBackOffValues{
+		MinWait:    2,
+		MaxWait:    4,
+		MaxRetries: 2,
+	}
+	cr.Spec.ExponentialBackOffValues = &expoValues
+	cr, err := c.catalogClient.ClusterRepos().Create(context.TODO(), cr, metav1.CreateOptions{})
+	require.NoError(c.T(), err)
+
+	retryNumber := 1
+	err = wait.PollUntilContextTimeout(context.TODO(), 200*time.Millisecond, 30*time.Second, true, func(ctx context.Context) (done bool, err error) {
+		cr, err = c.catalogClient.ClusterRepos().Get(ctx, params.Name, metav1.GetOptions{})
+		assert.NoError(c.T(), err)
+
+		for _, condition := range cr.Status.Conditions {
+			if v1.RepoCondition(condition.Type) == v1.RepoDownloaded {
+				logrus.Infof("Condition: %v, retryNumber %d, number of retries %d", condition, retryNumber, cr.Status.NumberOfRetries)
+				if condition.Status == corev1.ConditionFalse && cr.Status.NumberOfRetries == retryNumber {
+					retryNumber++
+					return false, nil
+				}
+				return condition.Status == corev1.ConditionFalse && cr.Status.NumberOfRetries == 0 && retryNumber == cr.Spec.ExponentialBackOffValues.MaxRetries+1, nil
+			}
+		}
+
+		return false, nil
+	})
+	require.NoError(c.T(), err)
+
+	downloadTime := cr.Status.DownloadTime
+	err = retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		cr, err = c.catalogClient.ClusterRepos().Get(context.TODO(), cr.Name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+
+		cr.Spec.GitBranch = "main"
+		cr, err = c.catalogClient.ClusterRepos().Update(context.TODO(), cr, metav1.UpdateOptions{})
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	require.NoError(c.T(), err)
+
+	// Validate the ClusterRepo was created and resources were downloaded
+	clusterRepo, err := c.pollUntilDownloaded(params.Name, metav1.Time{})
+	require.NoError(c.T(), err)
+
+	status := c.getStatusFromClusterRepo(clusterRepo)
+	assert.Greater(c.T(), status.DownloadTime.Time, downloadTime.Time)
+
+	err = c.catalogClient.ClusterRepos().Delete(context.TODO(), params.Name, metav1.DeleteOptions{})
+	assert.NoError(c.T(), err)
+
+	_, err = c.catalogClient.ClusterRepos().Get(context.TODO(), params.Name, metav1.GetOptions{})
+	assert.Error(c.T(), err)
+}
+
 // pollUntilDownloaded Polls until the ClusterRepo of the given name has been downloaded (by comparing prevDownloadTime against the current DownloadTime)
 func (c *ClusterRepoTestSuite) pollUntilDownloaded(ClusterRepoName string, prevDownloadTime metav1.Time) (*stevev1.SteveAPIObject, error) {
 	var clusterRepo *stevev1.SteveAPIObject
@@ -751,6 +906,19 @@ func setClusterRepoURL(spec *v1.RepoSpec, repoType RepoType, URL string) {
 	case OCI:
 		spec.URL = URL
 	}
+}
+
+// Get preferred outbound ip of this machine
+func getOutboundIP() net.IP {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		logrus.Fatal(err)
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+
+	return localAddr.IP
 }
 
 func TestClusterRepoTestSuite(t *testing.T) {

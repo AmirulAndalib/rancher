@@ -7,12 +7,11 @@ import (
 	"testing"
 
 	apisV1 "github.com/rancher/rancher/pkg/apis/provisioning.cattle.io/v1"
+	"github.com/rancher/rancher/tests/v2/actions/machinepools"
+	"github.com/rancher/rancher/tests/v2/actions/scalinginput"
 	"github.com/rancher/shepherd/clients/rancher"
 	v1 "github.com/rancher/shepherd/clients/rancher/v1"
 	"github.com/rancher/shepherd/extensions/clusters"
-	"github.com/rancher/shepherd/extensions/machinepools"
-	"github.com/rancher/shepherd/extensions/provisioninginput"
-	"github.com/rancher/shepherd/pkg/config"
 	"github.com/rancher/shepherd/pkg/session"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -20,10 +19,8 @@ import (
 
 type NodeReplacingTestSuite struct {
 	suite.Suite
-	session        *session.Session
-	client         *rancher.Client
-	ns             string
-	clustersConfig *provisioninginput.Config
+	session *session.Session
+	client  *rancher.Client
 }
 
 func (s *NodeReplacingTestSuite) TearDownSuite() {
@@ -34,11 +31,6 @@ func (s *NodeReplacingTestSuite) SetupSuite() {
 	testSession := session.NewSession()
 	s.session = testSession
 
-	s.ns = provisioninginput.Namespace
-
-	s.clustersConfig = new(provisioninginput.Config)
-	config.LoadConfig(provisioninginput.ConfigurationFileKey, s.clustersConfig)
-
 	client, err := rancher.NewClient("", testSession)
 	require.NoError(s.T(), err)
 
@@ -47,21 +39,15 @@ func (s *NodeReplacingTestSuite) SetupSuite() {
 
 func (s *NodeReplacingTestSuite) TestReplacingNodes() {
 	nodeRolesEtcd := machinepools.NodeRoles{
-		Etcd:         true,
-		ControlPlane: false,
-		Worker:       false,
+		Etcd: true,
 	}
 
 	nodeRolesControlPlane := machinepools.NodeRoles{
-		Etcd:         false,
 		ControlPlane: true,
-		Worker:       false,
 	}
 
 	nodeRolesWorker := machinepools.NodeRoles{
-		Etcd:         false,
-		ControlPlane: false,
-		Worker:       true,
+		Worker: true,
 	}
 
 	tests := []struct {
@@ -92,7 +78,8 @@ func (s *NodeReplacingTestSuite) TestReplacingNodes() {
 		}
 
 		s.Run(tt.name, func() {
-			ReplaceNodes(s.T(), s.client, s.client.RancherConfig.ClusterName, tt.nodeRoles.Etcd, tt.nodeRoles.ControlPlane, tt.nodeRoles.Worker)
+			err := scalinginput.ReplaceNodes(s.client, s.client.RancherConfig.ClusterName, tt.nodeRoles.Etcd, tt.nodeRoles.ControlPlane, tt.nodeRoles.Worker)
+			require.NoError(s.T(), err)
 		})
 	}
 }
