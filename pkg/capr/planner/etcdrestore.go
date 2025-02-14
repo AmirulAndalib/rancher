@@ -12,6 +12,7 @@ import (
 	"github.com/rancher/rancher/pkg/apis/rke.cattle.io/v1/plan"
 	"github.com/rancher/rancher/pkg/capr"
 	"github.com/rancher/rancher/pkg/controllers/capr/managesystemagent"
+	"github.com/rancher/rancher/pkg/utils"
 	"github.com/rancher/wrangler/v3/pkg/name"
 	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -314,6 +315,10 @@ func (p *Planner) generateEtcdSnapshotRestorePlan(controlPlane *rkev1.RKEControl
 
 	loopbackAddress := capr.GetLoopbackAddress(controlPlane)
 
+	if utils.IsPlainIPV6(loopbackAddress) {
+		loopbackAddress = fmt.Sprintf("[%s]", loopbackAddress)
+	}
+
 	args := []string{
 		"server",
 		"--cluster-reset",
@@ -345,7 +350,7 @@ func (p *Planner) generateEtcdSnapshotRestorePlan(controlPlane *rkev1.RKEControl
 		controlPlane,
 		"etcd-restore/restore-kill-all",
 		fmt.Sprintf("%v", controlPlane.Status.ETCDSnapshotRestore),
-		generateKillAllInstruction(runtime)))
+		generateKillAllInstruction(controlPlane)))
 
 	if runtime == capr.RuntimeRKE2 {
 		if generated, instruction := generateManifestRemovalInstruction(controlPlane, entry); generated {
@@ -387,22 +392,29 @@ func (p *Planner) generateStopServiceAndKillAllPlan(controlPlane *rkev1.RKEContr
 	if err != nil {
 		return nodePlan, joinedServer, err
 	}
+
 	runtime := capr.GetRuntime(controlPlane.Spec.KubernetesVersion)
-	nodePlan.Instructions = append(nodePlan.Instructions,
-		generateKillAllInstruction(runtime))
+	nodePlan.Instructions = append(nodePlan.Instructions, generateKillAllInstruction(controlPlane))
+
 	if runtime == capr.RuntimeRKE2 {
 		if generated, instruction := generateManifestRemovalInstruction(controlPlane, server); generated {
 			nodePlan.Instructions = append(nodePlan.Instructions, instruction)
 		}
 	}
+
 	return nodePlan, joinedServer, nil
 }
 
-func generateKillAllInstruction(runtime string) plan.OneTimeInstruction {
+func generateKillAllInstruction(controlPlane *rkev1.RKEControlPlane) plan.OneTimeInstruction {
+	runtime := capr.GetRuntime(controlPlane.Spec.KubernetesVersion)
 	killAllScript := runtime + "-killall.sh"
+
 	return plan.OneTimeInstruction{
 		Name:    "shutdown",
 		Command: "/bin/sh",
+		Env: []string{
+			fmt.Sprintf("%s_DATA_DIR=%s", strings.ToUpper(runtime), capr.GetDistroDataDir(controlPlane)),
+		},
 		Args: []string{
 			"-c",
 			fmt.Sprintf("if [ -z $(command -v %s) ] && [ -z $(command -v %s) ]; then echo %s does not appear to be installed; exit 0; else %s; fi", runtime, killAllScript, runtime, killAllScript),

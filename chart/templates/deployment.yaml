@@ -63,6 +63,9 @@ spec:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms: {{ include "linux-node-selector-terms" . | nindent 14 }}
       tolerations: {{ include "linux-node-tolerations" . | nindent 8 }}
+{{- if .Values.extraTolerations }}
+{{ toYaml .Values.extraTolerations | indent 8 }}
+{{- end }}
       containers:
       - image: {{ .Values.rancherImage }}:{{ default .Chart.AppVersion .Values.rancherImageTag }}
         imagePullPolicy: {{ default "IfNotPresent" .Values.rancherImagePullPolicy }}
@@ -210,16 +213,8 @@ spec:
 {{- if eq .Values.auditLog.destination "sidecar" }}
   {{- if gt (int .Values.auditLog.level) 0 }}
       # Make audit logs available for Rancher log collector tools.
-      {{- if .Values.busyboxImage }}
-      - image: {{ .Values.busyboxImage}}
-      {{- else }}
-      - image: {{ .Values.auditLog.image.repository }}:{{.Values.auditLog.image.tag}}
-      {{- end }}
-      {{- if .Values.busyboxImagePullPolicy }}
-        imagePullPolicy: {{ .Values.busyboxImagePullPolicy }}
-      {{- else }}
-        imagePullPolicy: {{ .Values.auditLog.image.pullPolicy }}
-      {{- end }}
+      - image: {{ include "auditLog_image" . }}
+        imagePullPolicy: {{ default .Values.auditLog.image.pullPolicy .Values.busyboxImagePullPolicy }}
         name: {{ template "rancher.name" . }}-audit-log
         command: ["tail"]
         args: ["-F", "/var/log/auditlog/rancher-api-audit.log"]

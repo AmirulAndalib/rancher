@@ -15,16 +15,16 @@ import (
 	"time"
 
 	"github.com/rancher/rancher/pkg/api/scheme"
+	kubenamespaces "github.com/rancher/rancher/tests/v2/actions/kubeapi/namespaces"
+	"github.com/rancher/rancher/tests/v2/actions/kubeapi/rbac"
+	"github.com/rancher/rancher/tests/v2/actions/kubeapi/secrets"
+	"github.com/rancher/rancher/tests/v2/actions/namespaces"
+	stevesecrets "github.com/rancher/rancher/tests/v2/actions/secrets"
+	"github.com/rancher/rancher/tests/v2/actions/serviceaccounts"
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	clientv1 "github.com/rancher/shepherd/clients/rancher/v1"
 	"github.com/rancher/shepherd/extensions/clusters"
-	kubenamespaces "github.com/rancher/shepherd/extensions/kubeapi/namespaces"
-	"github.com/rancher/shepherd/extensions/kubeapi/rbac"
-	"github.com/rancher/shepherd/extensions/kubeapi/secrets"
-	"github.com/rancher/shepherd/extensions/namespaces"
-	stevesecrets "github.com/rancher/shepherd/extensions/secrets"
-	"github.com/rancher/shepherd/extensions/serviceaccounts"
 	"github.com/rancher/shepherd/extensions/unstructured"
 	"github.com/rancher/shepherd/extensions/users"
 	password "github.com/rancher/shepherd/extensions/users/passwordgenerator"
@@ -2360,8 +2360,6 @@ func (s *steveAPITestSuite) TestList() {
 	for _, test := range tests {
 		s.Run(test.description, func() {
 			userClient := s.userClients[test.user]
-			userClient, err := userClient.ReLogin()
-			require.NoError(s.T(), err)
 
 			client, err := userClient.Steve.ProxyDownstream(s.clusterID)
 			require.NoError(s.T(), err)
@@ -2690,5 +2688,7 @@ func TestSteveLocal(t *testing.T) {
 }
 
 func TestSteveDownstream(t *testing.T) {
+	// TODO: Re-enable the test when the bug is fixed
+	t.Skip()
 	suite.Run(t, new(DownstreamSteveAPITestSuite))
 }

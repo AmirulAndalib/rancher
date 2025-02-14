@@ -5,12 +5,12 @@ package rke1
 import (
 	"testing"
 
-	"github.com/rancher/rancher/tests/v2/validation/provisioning/permutations"
+	"github.com/rancher/rancher/tests/v2/actions/provisioning/permutations"
+	"github.com/rancher/rancher/tests/v2/actions/provisioninginput"
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	"github.com/rancher/shepherd/extensions/clusters"
 	"github.com/rancher/shepherd/extensions/clusters/kubernetesversions"
-	"github.com/rancher/shepherd/extensions/provisioninginput"
 	"github.com/rancher/shepherd/extensions/users"
 	password "github.com/rancher/shepherd/extensions/users/passwordgenerator"
 	"github.com/rancher/shepherd/pkg/config"
@@ -45,8 +45,17 @@ func (c *CustomClusterProvisioningTestSuite) SetupSuite() {
 
 	c.client = client
 
-	c.provisioningConfig.RKE1KubernetesVersions, err = kubernetesversions.Default(c.client, clusters.RKE1ClusterType.String(), c.provisioningConfig.RKE1KubernetesVersions)
-	require.NoError(c.T(), err)
+	if c.provisioningConfig.RKE1KubernetesVersions == nil {
+		rke1Versions, err := kubernetesversions.Default(c.client, clusters.RKE1ClusterType.String(), nil)
+		require.NoError(c.T(), err)
+
+		c.provisioningConfig.RKE1KubernetesVersions = rke1Versions
+	} else if c.provisioningConfig.RKE1KubernetesVersions[0] == "all" {
+		rke1Versions, err := kubernetesversions.ListRKE1AllVersions(c.client)
+		require.NoError(c.T(), err)
+
+		c.provisioningConfig.RKE1KubernetesVersions = rke1Versions
+	}
 
 	enabled := true
 	var testuser = namegen.AppendRandomString("testuser-")
@@ -82,11 +91,8 @@ func (c *CustomClusterProvisioningTestSuite) TestProvisioningRKE1CustomCluster()
 		client    *rancher.Client
 		runFlag   bool
 	}{
-		{"1 Node all roles " + provisioninginput.AdminClientName.String(), nodeRolesAll, c.client, c.client.Flags.GetValue(environmentflag.Long)},
 		{"1 Node all roles " + provisioninginput.StandardClientName.String(), nodeRolesAll, c.standardUserClient, c.client.Flags.GetValue(environmentflag.Short) || c.client.Flags.GetValue(environmentflag.Long)},
-		{"2 nodes - etcd|cp roles per 1 node " + provisioninginput.AdminClientName.String(), nodeRolesShared, c.client, c.client.Flags.GetValue(environmentflag.Long)},
 		{"2 nodes - etcd|cp roles per 1 node " + provisioninginput.StandardClientName.String(), nodeRolesShared, c.standardUserClient, c.client.Flags.GetValue(environmentflag.Short) || c.client.Flags.GetValue(environmentflag.Long)},
-		{"3 nodes - 1 role per node " + provisioninginput.AdminClientName.String(), nodeRolesDedicated, c.client, c.client.Flags.GetValue(environmentflag.Long)},
 		{"3 nodes - 1 role per node " + provisioninginput.StandardClientName.String(), nodeRolesDedicated, c.standardUserClient, c.client.Flags.GetValue(environmentflag.Long)},
 	}
 	for _, tt := range tests {

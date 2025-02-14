@@ -3,13 +3,14 @@ package clusterandprojectroles
 import (
 	"testing"
 
+	"github.com/rancher/rancher/tests/v2/actions/clusters"
+	"github.com/rancher/rancher/tests/v2/actions/provisioning"
+	"github.com/rancher/rancher/tests/v2/actions/provisioninginput"
+	rbac "github.com/rancher/rancher/tests/v2/actions/rbac"
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
-	"github.com/rancher/shepherd/extensions/clusters"
+	extensionscluster "github.com/rancher/shepherd/extensions/clusters"
 	"github.com/rancher/shepherd/extensions/clusters/kubernetesversions"
-	"github.com/rancher/shepherd/extensions/provisioning"
-	"github.com/rancher/shepherd/extensions/provisioninginput"
-	rbac "github.com/rancher/shepherd/extensions/rbac"
 	"github.com/rancher/shepherd/extensions/settings"
 	"github.com/rancher/shepherd/pkg/config"
 	"github.com/rancher/shepherd/pkg/session"
@@ -38,10 +39,15 @@ func (ra *RestrictedAdminTestSuite) SetupSuite() {
 
 	ra.client = client
 
+	// Disabling configuration here is to avoid interference with other pipeline tests.
+	// Updates to the config are temporarily disabled during the test
+	// and are automatically enabled during cleanup.
+	provisioning.DisableUpdateConfig(ra.client)
+
 	log.Info("Getting cluster name from the config file and append cluster details in the struct.")
 	clusterName := client.RancherConfig.ClusterName
 	require.NotEmptyf(ra.T(), clusterName, "Cluster name to install should be set")
-	clusterID, err := clusters.GetClusterIDByName(ra.client, clusterName)
+	clusterID, err := extensionscluster.GetClusterIDByName(ra.client, clusterName)
 	require.NoError(ra.T(), err, "Error getting cluster ID")
 	ra.cluster, err = ra.client.Management.Cluster.ByID(clusterID)
 	require.NoError(ra.T(), err)
@@ -63,7 +69,7 @@ func (ra *RestrictedAdminTestSuite) TestRestrictedAdminCreateCluster() {
 	externalNodeProvider := provisioning.ExternalNodeProviderSetup(nodeProviders)
 	clusterConfig := clusters.ConvertConfigToClusterConfig(userConfig)
 	clusterConfig.NodePools = nodeAndRoles
-	kubernetesVersion, err := kubernetesversions.Default(restrictedAdminClient, clusters.RKE1ClusterType.String(), []string{})
+	kubernetesVersion, err := kubernetesversions.Default(restrictedAdminClient, extensionscluster.RKE1ClusterType.String(), []string{})
 	require.NoError(ra.T(), err)
 
 	clusterConfig.KubernetesVersion = kubernetesVersion[0]

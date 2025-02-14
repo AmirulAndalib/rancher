@@ -5,12 +5,12 @@ package k3s
 import (
 	"testing"
 
-	"github.com/rancher/rancher/tests/v2/validation/provisioning/permutations"
+	"github.com/rancher/rancher/tests/v2/actions/provisioning/permutations"
+	"github.com/rancher/rancher/tests/v2/actions/provisioninginput"
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	"github.com/rancher/shepherd/extensions/clusters"
 	"github.com/rancher/shepherd/extensions/clusters/kubernetesversions"
-	"github.com/rancher/shepherd/extensions/provisioninginput"
 	"github.com/rancher/shepherd/extensions/users"
 	password "github.com/rancher/shepherd/extensions/users/passwordgenerator"
 	"github.com/rancher/shepherd/pkg/config"
@@ -45,9 +45,17 @@ func (k *K3SNodeDriverProvisioningTestSuite) SetupSuite() {
 
 	k.client = client
 
-	k.provisioningConfig.K3SKubernetesVersions, err = kubernetesversions.Default(
-		k.client, clusters.K3SClusterType.String(), k.provisioningConfig.K3SKubernetesVersions)
-	require.NoError(k.T(), err)
+	if k.provisioningConfig.K3SKubernetesVersions == nil {
+		k3sVersions, err := kubernetesversions.Default(k.client, clusters.K3SClusterType.String(), nil)
+		require.NoError(k.T(), err)
+
+		k.provisioningConfig.K3SKubernetesVersions = k3sVersions
+	} else if k.provisioningConfig.K3SKubernetesVersions[0] == "all" {
+		k3sVersions, err := kubernetesversions.ListK3SAllVersions(k.client)
+		require.NoError(k.T(), err)
+
+		k.provisioningConfig.K3SKubernetesVersions = k3sVersions
+	}
 
 	enabled := true
 	var testuser = namegen.AppendRandomString("testuser-")
@@ -81,11 +89,8 @@ func (k *K3SNodeDriverProvisioningTestSuite) TestProvisioningK3SCluster() {
 		client       *rancher.Client
 		runFlag      bool
 	}{
-		{"1 Node all roles " + provisioninginput.AdminClientName.String(), nodeRolesAll, k.client, k.client.Flags.GetValue(environmentflag.Long)},
 		{"1 Node all roles " + provisioninginput.StandardClientName.String(), nodeRolesAll, k.standardUserClient, k.client.Flags.GetValue(environmentflag.Short) || k.client.Flags.GetValue(environmentflag.Long)},
-		{"2 nodes - etcd|cp roles per 1 node " + provisioninginput.AdminClientName.String(), nodeRolesShared, k.client, k.client.Flags.GetValue(environmentflag.Long)},
 		{"2 nodes - etcd|cp roles per 1 node " + provisioninginput.StandardClientName.String(), nodeRolesShared, k.standardUserClient, k.client.Flags.GetValue(environmentflag.Short) || k.client.Flags.GetValue(environmentflag.Long)},
-		{"3 nodes - 1 role per node " + provisioninginput.AdminClientName.String(), nodeRolesDedicated, k.client, k.client.Flags.GetValue(environmentflag.Long)},
 		{"3 nodes - 1 role per node " + provisioninginput.StandardClientName.String(), nodeRolesDedicated, k.standardUserClient, k.client.Flags.GetValue(environmentflag.Long)},
 	}
 

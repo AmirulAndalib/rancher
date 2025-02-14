@@ -25,10 +25,10 @@ import (
 	"github.com/rancher/rancher/pkg/controllers/management/secretmigrator"
 	"github.com/rancher/rancher/pkg/dialer"
 	mgmtv3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
+	"github.com/rancher/rancher/pkg/kontainer-engine/drivers/util"
 	"github.com/rancher/rancher/pkg/namespace"
 	"github.com/rancher/rancher/pkg/systemaccount"
 	"github.com/rancher/rancher/pkg/types/config"
-	typesDialer "github.com/rancher/rancher/pkg/types/config/dialer"
 	"github.com/rancher/rancher/pkg/wrangler"
 	corecontrollers "github.com/rancher/wrangler/v3/pkg/generated/controllers/core/v1"
 	"github.com/sirupsen/logrus"
@@ -39,6 +39,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/transport"
 	"sigs.k8s.io/aws-iam-authenticator/pkg/token"
 )
 
@@ -193,6 +194,10 @@ func (e *eksOperatorController) onClusterChange(key string, cluster *mgmtv3.Clus
 
 		if apimgmtv3.ClusterConditionUpdated.IsFalse(cluster) && strings.HasPrefix(apimgmtv3.ClusterConditionUpdated.GetMessage(cluster), "[Syncing error") {
 			return cluster, fmt.Errorf(apimgmtv3.ClusterConditionUpdated.GetMessage(cluster))
+		}
+
+		if cluster.Status.EKSStatus.UpstreamSpec == nil {
+			return cluster, fmt.Errorf("initial upstreamSpec on cluster [%s] has not been set, unable to continue", cluster.Name)
 		}
 
 		// EKS cluster must have at least one node to run cluster agent. The best way to verify
@@ -389,6 +394,7 @@ func (e *eksOperatorController) setInitialUpstreamSpec(cluster *mgmtv3.Cluster) 
 	cluster = cluster.DeepCopy()
 	upstreamSpec, err := clusterupstreamrefresher.BuildEKSUpstreamSpec(e.secretClient, cluster)
 	if err != nil {
+		logrus.Warnf("failed to set initial upstreamSpec on cluster [%s]: %v", cluster.Name, err)
 		return cluster, err
 	}
 	cluster.Status.EKSStatus.UpstreamSpec = upstreamSpec
@@ -439,17 +445,21 @@ func (e *eksOperatorController) updateEKSClusterConfig(cluster *mgmtv3.Cluster, 
 
 // generateAndSetServiceAccount uses the API endpoint and CA cert to generate a service account token. The token is then copied to the cluster status.
 func (e *eksOperatorController) generateAndSetServiceAccount(cluster *mgmtv3.Cluster) (*mgmtv3.Cluster, error) {
-	clusterDialer, err := e.ClientDialer.ClusterDialer(cluster.Name, true)
+	clusterDialer, err := e.ClientDialer.ClusterDialHolder(cluster.Name, true)
 	if err != nil {
 		return cluster, err
 	}
 
-	restConfig, err := e.getRestConfig(cluster, clusterDialer)
+	restConfig, err := e.getRestConfig(cluster)
 	if err != nil {
 		return cluster, err
 	}
+	clientset, err := clusteroperator.NewClientSetForConfig(restConfig, clusteroperator.WithDialHolder(clusterDialer))
+	if err != nil {
+		return nil, fmt.Errorf("error creating clientset for cluster %s: %w", cluster.Name, err)
+	}
 
-	saToken, err := clusteroperator.GenerateSAToken(restConfig)
+	saToken, err := util.GenerateServiceAccountToken(clientset, cluster.Name)
 	if err != nil {
 		return cluster, err
 	}
@@ -508,6 +518,13 @@ func (e *eksOperatorController) recordAppliedSpec(cluster *mgmtv3.Cluster) (*mgm
 	return e.ClusterClient.Update(cluster)
 }
 
+var publicDialer = &transport.DialHolder{
+	Dial: (&net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}).DialContext,
+}
+
 // generateSATokenWithPublicAPI tries to get a service account token from the cluster using the public API endpoint.
 // This function is called if the cluster has only privateEndpoint enabled and not publicly available.
 // If Rancher is able to communicate with the cluster through its API endpoint even though it is private, then this function will retrieve
@@ -520,16 +537,17 @@ func (e *eksOperatorController) recordAppliedSpec(cluster *mgmtv3.Cluster) (*mgm
 // If an error different from the two below occur, then the *bool return value will be nil, indicating that Rancher was not able to determine if
 // tunneling is required to communicate with the cluster.
 func (e *eksOperatorController) generateSATokenWithPublicAPI(cluster *mgmtv3.Cluster) (string, *bool, error) {
-	restConfig, err := e.getRestConfig(cluster, (&net.Dialer{
-		Timeout:   30 * time.Second,
-		KeepAlive: 30 * time.Second,
-	}).DialContext)
+	restConfig, err := e.getRestConfig(cluster)
 	if err != nil {
 		return "", nil, err
 	}
+	clientset, err := clusteroperator.NewClientSetForConfig(restConfig, clusteroperator.WithDialHolder(publicDialer))
+	if err != nil {
+		return "", nil, fmt.Errorf("error creating clientset for cluster %s: %w", cluster.Name, err)
+	}
 
 	requiresTunnel := new(bool)
-	serviceToken, err := clusteroperator.GenerateSAToken(restConfig)
+	serviceToken, err := util.GenerateServiceAccountToken(clientset, cluster.Name)
 	if err != nil {
 		*requiresTunnel = true
 		var dnsError *net.DNSError
@@ -606,7 +624,7 @@ func (e *eksOperatorController) getAccessToken(cluster *mgmtv3.Cluster) (string,
 	return awsToken.Token, nil
 }
 
-func (e *eksOperatorController) getRestConfig(cluster *mgmtv3.Cluster, dialer typesDialer.Dialer) (*rest.Config, error) {
+func (e *eksOperatorController) getRestConfig(cluster *mgmtv3.Cluster) (*rest.Config, error) {
 	accessToken, err := e.getAccessToken(cluster)
 	if err != nil {
 		return nil, err
@@ -622,8 +640,8 @@ func (e *eksOperatorController) getRestConfig(cluster *mgmtv3.Cluster, dialer ty
 		TLSClientConfig: rest.TLSClientConfig{
 			CAData: decodedCA,
 		},
+		UserAgent:   util.UserAgentForCluster(cluster),
 		BearerToken: accessToken,
-		Dial:        dialer,
 	}, nil
 }
 

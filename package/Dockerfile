@@ -1,3 +1,20 @@
+FROM --platform=$BUILDPLATFORM registry.suse.com/bci/golang:1.23 as build
+ARG VERSION
+ARG COMMIT
+ARG RKE_VERSION
+ARG CGO_ENABLED=0
+ARG TAGS="k8s"
+ARG LINKFLAGS="-extldflags -static"
+ARG DEFAULT_VALUES="{\"rke-version\":\"${RKE_VERSION}\"}"
+ARG LDFLAGS="-X github.com/rancher/rancher/pkg/version.Version=${VERSION} -X github.com/rancher/rancher/pkg/version.GitCommit=${COMMIT} -X github.com/rancher/rancher/pkg/settings.InjectDefaults=${DEFAULT_VALUES} ${LINKFLAGS}"
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /app
+COPY . .
+RUN go mod download
+RUN GOOS=$TARGETOS GOARCH=$TARGETARCH go build -tags "${TAGS}" -ldflags "${LDFLAGS}" -o rancher
+
 FROM registry.suse.com/bci/bci-micro:15.6 AS final
 
 # Temporary build stage image
@@ -10,7 +27,7 @@ COPY --from=final / /chroot/
 RUN zypper refresh && \
     zypper --installroot /chroot -n in --no-recommends \
     git-core curl util-linux ca-certificates ca-certificates-mozilla unzip xz gzip sed tar shadow gawk vim-small \
-    netcat-openbsd mkisofs openssh-clients && \
+    netcat-openbsd mkisofs openssh-clients openssl patterns-base-fips && \
     zypper --installroot /chroot clean -a && \
     rm -rf /chroot/var/cache/zypp/* /chroot/var/log/zypp/* /chroot/tmp/* /chroot/var/tmp/* /chroot/usr/share/doc/packages/*
 
@@ -28,8 +45,12 @@ RUN /usr/bin/unshare --version && \
     /usr/bin/nsenter --version
 
 RUN useradd rancher && \
+    groupadd jail-accessors && \
+    usermod -aG jail-accessors rancher && \
     mkdir -p /var/lib/rancher /var/lib/cattle /opt/jail /opt/drivers/management-state/bin && \
-    chown -R rancher /var/lib/rancher /var/lib/cattle /usr/local/bin
+    chgrp jail-accessors /var/lib/rancher /var/lib/cattle /usr/local/bin && \
+    chmod 750            /var/lib/rancher /var/lib/cattle /usr/local/bin && \
+    chmod g+s            /var/lib/rancher /var/lib/cattle /usr/local/bin
 
 RUN mkdir /root/.kube && \
     ln -s /etc/rancher/k3s/k3s.yaml /root/.kube/k3s.yaml  && \
@@ -47,33 +68,34 @@ ARG PARTNER_CHART_DEFAULT_BRANCH=main
 ARG RKE2_CHART_DEFAULT_BRANCH=main
 # kontainer-driver-metadata branch to be set for specific branch other than dev/master, logic at rancher/rancher/pkg/settings/setting.go
 ARG CATTLE_KDM_BRANCH=dev-v2.9
+ARG VERSION=${VERSION}
 
 ENV CATTLE_SYSTEM_CHART_DEFAULT_BRANCH=$SYSTEM_CHART_DEFAULT_BRANCH
 ENV CATTLE_CHART_DEFAULT_BRANCH=$CHART_DEFAULT_BRANCH
 ENV CATTLE_PARTNER_CHART_DEFAULT_BRANCH=$PARTNER_CHART_DEFAULT_BRANCH
 ENV CATTLE_RKE2_CHART_DEFAULT_BRANCH=$RKE2_CHART_DEFAULT_BRANCH
 ENV CATTLE_HELM_VERSION v2.16.8-rancher2
-ENV CATTLE_MACHINE_VERSION v0.15.0-rancher114
-ENV CATTLE_K3S_VERSION v1.30.1+k3s1
+ENV CATTLE_MACHINE_VERSION v0.15.0-rancher125
+ENV CATTLE_K3S_VERSION v1.30.2+k3s2
 ENV CATTLE_MACHINE_PROVISION_IMAGE rancher/machine:${CATTLE_MACHINE_VERSION}
-ENV CATTLE_ETCD_VERSION v3.5.12
+ENV CATTLE_ETCD_VERSION v3.5.14
 ENV LOGLEVEL_VERSION v0.1.6
 ENV TINI_VERSION v0.18.0
 ENV TELEMETRY_VERSION v0.6.2
-ENV DOCKER_MACHINE_LINODE_VERSION v0.1.11
+ENV DOCKER_MACHINE_LINODE_VERSION v0.1.12
 ENV LINODE_UI_DRIVER_VERSION v0.7.0
 # make sure the version number is consistent with the one at Line 100 of pkg/data/management/machinedriver_data.go
-ENV DOCKER_MACHINE_HARVESTER_VERSION v0.6.7
+ENV DOCKER_MACHINE_HARVESTER_VERSION v0.7.2
 ENV CATTLE_KDM_BRANCH ${CATTLE_KDM_BRANCH}
-ENV HELM_VERSION v3.15.1
-ENV KUSTOMIZE_VERSION v5.0.1
-ENV CATTLE_WINS_AGENT_VERSION v0.4.16
+ENV HELM_VERSION v3.15.2
+ENV KUSTOMIZE_VERSION v5.4.2
+ENV CATTLE_WINS_AGENT_VERSION v0.4.21
 ENV CATTLE_WINS_AGENT_INSTALL_SCRIPT https://raw.githubusercontent.com/rancher/wins/${CATTLE_WINS_AGENT_VERSION}/install.ps1
 ENV CATTLE_WINS_AGENT_UNINSTALL_SCRIPT https://raw.githubusercontent.com/rancher/wins/${CATTLE_WINS_AGENT_VERSION}/uninstall.ps1
 ENV CATTLE_WINS_AGENT_UPGRADE_IMAGE rancher/wins:${CATTLE_WINS_AGENT_VERSION}
 ENV CATTLE_CSI_PROXY_AGENT_VERSION v1.1.3
 # make sure the CATTLE_SYSTEM_AGENT_VERSION is consistent with tests/v2/codecoverage/package/Dockerfile
-ENV CATTLE_SYSTEM_AGENT_VERSION v0.3.7-rc2
+ENV CATTLE_SYSTEM_AGENT_VERSION v0.3.10
 ENV CATTLE_SYSTEM_AGENT_DOWNLOAD_PREFIX https://github.com/rancher/system-agent/releases/download
 ENV CATTLE_SYSTEM_AGENT_UPGRADE_IMAGE rancher/system-agent:${CATTLE_SYSTEM_AGENT_VERSION}-suc
 ENV CATTLE_SYSTEM_AGENT_INSTALLER_IMAGE rancher/system-agent-installer-
@@ -104,7 +126,6 @@ ENV CATTLE_CSP_ADAPTER_MIN_VERSION=$CATTLE_CSP_ADAPTER_MIN_VERSION
 
 RUN mkdir -p /var/lib/rancher-data/local-catalogs/system-library && \
     mkdir -p /var/lib/rancher-data/local-catalogs/library && \
-    mkdir -p /var/lib/rancher-data/local-catalogs/helm3-library && \
     mkdir -p /var/lib/rancher-data/local-catalogs/v2 && \
     git clone -b $CATTLE_SYSTEM_CHART_DEFAULT_BRANCH --depth 1 https://github.com/rancher/system-charts /var/lib/rancher-data/local-catalogs/system-library && \
     # Temporarily clone from our GitHub's main repo, to avoid unnecessary load
@@ -116,21 +137,21 @@ RUN mkdir -p /var/lib/rancher-data/local-catalogs/system-library && \
     git clone -b $CATTLE_RKE2_CHART_DEFAULT_BRANCH --depth 1 https://git.rancher.io/rke2-charts /var/lib/rancher-data/local-catalogs/v2/rancher-rke2-charts/675f1b63a0a83905972dcab2794479ed599a6f41b86cd6193d69472d0fa889c9 && \
     # Revert the previous change in git.rancher.io from .gitconfig
     rm "${HOME}/.gitconfig" && \
-    git clone -b master --depth 1 https://github.com/rancher/charts /var/lib/rancher-data/local-catalogs/library && \
-    git clone -b master --depth 1 https://github.com/rancher/helm3-charts /var/lib/rancher-data/local-catalogs/helm3-library
+    git clone -b master --depth 1 https://github.com/rancher/charts /var/lib/rancher-data/local-catalogs/library
 
 RUN curl -sLf https://github.com/rancher/machine/releases/download/${CATTLE_MACHINE_VERSION}/rancher-machine-${ARCH}.tar.gz | tar xvzf - -C /usr/bin && \
+    chown root:root /usr/bin/rancher-machine && \
     curl -sLf https://github.com/rancher/loglevel/releases/download/${LOGLEVEL_VERSION}/loglevel-${ARCH}-${LOGLEVEL_VERSION}.tar.gz | tar xvzf - -C /usr/bin && \
-    curl -LO https://github.com/linode/docker-machine-driver-linode/releases/download/${DOCKER_MACHINE_LINODE_VERSION}/docker-machine-driver-linode_linux-amd64.zip && \
-    unzip docker-machine-driver-linode_linux-amd64.zip -d /opt/drivers/management-state/bin && \
+    curl -LO https://github.com/linode/docker-machine-driver-linode/releases/download/${DOCKER_MACHINE_LINODE_VERSION}/docker-machine-driver-linode_linux-${ARCH}.zip && \
+    unzip docker-machine-driver-linode_linux-${ARCH}.zip -d /opt/drivers/management-state/bin && \
     mkdir -p /usr/share/rancher/ui/assets/ && \
     ln -s /opt/drivers/management-state/bin/docker-machine-driver-linode /usr/share/rancher/ui/assets/ && \
-    rm docker-machine-driver-linode_linux-amd64.zip
+    rm docker-machine-driver-linode_linux-${ARCH}.zip
 
-RUN curl -LO https://releases.rancher.com/harvester-node-driver/${DOCKER_MACHINE_HARVESTER_VERSION}/docker-machine-driver-harvester-amd64.tar.gz && \
-    tar -xf docker-machine-driver-harvester-amd64.tar.gz -C /opt/drivers/management-state/bin && \
+RUN curl -LO https://github.com/harvester/docker-machine-driver-harvester/releases/download/${DOCKER_MACHINE_HARVESTER_VERSION}/docker-machine-driver-harvester-${ARCH}.tar.gz && \
+    tar -xf docker-machine-driver-harvester-${ARCH}.tar.gz -C /opt/drivers/management-state/bin && \
     ln -s /opt/drivers/management-state/bin/docker-machine-driver-harvester /usr/share/rancher/ui/assets/ && \
-    rm docker-machine-driver-harvester-amd64.tar.gz
+    rm docker-machine-driver-harvester-${ARCH}.tar.gz
 
 ENV TINI_URL_amd64=https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini \
     TINI_URL_arm64=https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-arm64 \
@@ -161,10 +182,11 @@ RUN curl -sLf ${!HELM_URL_V2} > /usr/bin/rancher-helm && \
 # set up helm 3
 RUN curl ${HELM_URL_V3} | tar xvzf - --strip-components=1 -C /usr/bin && \
     mv /usr/bin/helm /usr/bin/helm_v3 && \
+    chown root:root /usr/bin/helm_v3 /usr/bin/kustomize && \
     chmod +x /usr/bin/kustomize
 
 # Set up K3s: copy the necessary binaries from the K3s image.
-COPY --from=rancher/k3s:v1.30.1-k3s1 \
+COPY --from=rancher/k3s:v1.30.2-k3s2 \
     /bin/blkid \
     /bin/bandwidth \
     /bin/cni \
@@ -211,9 +233,9 @@ RUN curl -sLf ${!TINI_URL} > /usr/bin/tini && \
     chmod +x /usr/bin/tini /usr/bin/telemetry && \
     mkdir -p /var/lib/rancher-data/driver-metadata
 
-ENV CATTLE_UI_VERSION 2.9.0-alpha7
-ENV CATTLE_DASHBOARD_UI_VERSION v2.9.0-alpha7
-ENV CATTLE_CLI_VERSION v2.9.0-rc1
+ENV CATTLE_UI_VERSION 2.9.6
+ENV CATTLE_DASHBOARD_UI_VERSION v2.9.6
+ENV CATTLE_CLI_VERSION v2.9.5
 
 # Base UI brand used as a fallback env setting (not user facing) to indicate this is a non-prime install
 ENV CATTLE_BASE_UI_BRAND=
@@ -257,16 +279,17 @@ ENV CATTLE_CLI_URL_DARWIN  https://releases.rancher.com/cli2/${CATTLE_CLI_VERSIO
 ENV CATTLE_CLI_URL_LINUX   https://releases.rancher.com/cli2/${CATTLE_CLI_VERSION}/rancher-linux-amd64-${CATTLE_CLI_VERSION}.tar.gz
 ENV CATTLE_CLI_URL_WINDOWS https://releases.rancher.com/cli2/${CATTLE_CLI_VERSION}/rancher-windows-386-${CATTLE_CLI_VERSION}.zip
 
-ARG VERSION=dev
 ENV CATTLE_SERVER_VERSION ${VERSION}
-COPY entrypoint.sh rancher /usr/bin/
-COPY kustomize.sh /usr/bin/
-COPY jailer.sh /usr/bin/
-COPY k3s-airgap-images.tar /var/lib/rancher/k3s/agent/images/
+
+COPY --from=build /app/rancher /usr/bin/
+COPY --from=build /app/package/entrypoint.sh /usr/bin/
+COPY --from=build /app/package/kustomize.sh /usr/bin/
+COPY --from=build app/package/jailer.sh /usr/bin/
+COPY --from=build /app/k3s-airgap-images.tar /var/lib/rancher/k3s/agent/images/
 RUN chmod +x /usr/bin/entrypoint.sh
 RUN chmod +x /usr/bin/kustomize.sh
 
-COPY data.json /var/lib/rancher-data/driver-metadata/
+COPY --from=build /app/data.json /var/lib/rancher-data/driver-metadata/
 
 ENV CATTLE_AGENT_IMAGE ${IMAGE_REPO}/rancher-agent:${VERSION}
 ENV CATTLE_SERVER_IMAGE ${IMAGE_REPO}/rancher

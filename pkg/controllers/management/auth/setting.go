@@ -2,7 +2,6 @@ package auth
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/rancher/rancher/pkg/auth/providerrefresh"
 	"github.com/rancher/rancher/pkg/auth/providers/azure"
@@ -48,15 +47,14 @@ func (c *SettingController) sync(key string, obj *v3.Setting) (runtime.Object, e
 		azure.UpdateGroupCacheSize(obj.Value)
 	case settings.UserRetentionCron.Name:
 		if err := c.scheduleUserRetention(obj.Value); err != nil {
-			logrus.Errorf("Failed to schedule user retention daemon: %v", err)
+			logrus.Errorf("error scheduling user retention daemon: %v", err)
 		}
 	case settings.DisableInactiveUserAfter.Name,
 		settings.DeleteInactiveUserAfter.Name,
 		settings.UserLastLoginDefault.Name:
 		if err := c.ensureUserRetentionLabels(); err != nil {
-			return nil, fmt.Errorf("error updating retention labels for users: %w", err)
+			logrus.Errorf("error updating retention labels for users: %v", err)
 		}
 	}
-
 	return nil, nil
 }

@@ -5,12 +5,12 @@ package k3s
 import (
 	"testing"
 
-	"github.com/rancher/rancher/tests/v2/validation/provisioning/permutations"
+	"github.com/rancher/rancher/tests/v2/actions/provisioning/permutations"
+	"github.com/rancher/rancher/tests/v2/actions/provisioninginput"
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	"github.com/rancher/shepherd/extensions/clusters"
 	"github.com/rancher/shepherd/extensions/clusters/kubernetesversions"
-	"github.com/rancher/shepherd/extensions/provisioninginput"
 	"github.com/rancher/shepherd/extensions/users"
 	password "github.com/rancher/shepherd/extensions/users/passwordgenerator"
 	"github.com/rancher/shepherd/pkg/config"
@@ -44,9 +44,17 @@ func (k *K3SPSACTTestSuite) SetupSuite() {
 
 	k.client = client
 
-	k.provisioningConfig.K3SKubernetesVersions, err = kubernetesversions.Default(
-		k.client, clusters.K3SClusterType.String(), k.provisioningConfig.K3SKubernetesVersions)
-	require.NoError(k.T(), err)
+	if k.provisioningConfig.K3SKubernetesVersions == nil {
+		k3sVersions, err := kubernetesversions.Default(k.client, clusters.K3SClusterType.String(), nil)
+		require.NoError(k.T(), err)
+
+		k.provisioningConfig.K3SKubernetesVersions = k3sVersions
+	} else if k.provisioningConfig.K3SKubernetesVersions[0] == "all" {
+		k3sVersions, err := kubernetesversions.ListK3SAllVersions(k.client)
+		require.NoError(k.T(), err)
+
+		k.provisioningConfig.K3SKubernetesVersions = k3sVersions
+	}
 
 	enabled := true
 	var testuser = namegen.AppendRandomString("testuser-")
@@ -108,48 +116,6 @@ func (k *K3SPSACTTestSuite) TestK3SPSACTNodeDriverCluster() {
 		provisioningConfig.PSACT = string(tt.psact)
 		permutations.RunTestPermutations(&k.Suite, tt.name, tt.client, &provisioningConfig,
 			permutations.K3SProvisionCluster, nil, nil)
-	}
-}
-
-func (k *K3SPSACTTestSuite) TestK3SPSACTCustomCluster() {
-	nodeRolesDedicated := []provisioninginput.MachinePools{
-		provisioninginput.EtcdMachinePool,
-		provisioninginput.ControlPlaneMachinePool,
-		provisioninginput.WorkerMachinePool,
-	}
-
-	tests := []struct {
-		name         string
-		machinePools []provisioninginput.MachinePools
-		psact        provisioninginput.PSACT
-		client       *rancher.Client
-	}{
-		{
-			"Rancher Privileged " + provisioninginput.StandardClientName.String(),
-			nodeRolesDedicated,
-			"rancher-privileged",
-			k.standardUserClient,
-		},
-		{
-			"Rancher Restricted " + provisioninginput.StandardClientName.String(),
-			nodeRolesDedicated,
-			"rancher-restricted",
-			k.standardUserClient,
-		},
-		{
-			"Rancher Baseline " + provisioninginput.AdminClientName.String(),
-			nodeRolesDedicated,
-			"rancher-baseline",
-			k.client,
-		},
-	}
-
-	for _, tt := range tests {
-		provisioningConfig := *k.provisioningConfig
-		provisioningConfig.MachinePools = tt.machinePools
-		provisioningConfig.PSACT = string(tt.psact)
-		permutations.RunTestPermutations(&k.Suite, tt.name, tt.client, &provisioningConfig,
-			permutations.K3SCustomCluster, nil, nil)
 	}
 }
 

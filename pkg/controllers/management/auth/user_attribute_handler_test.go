@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/golang/mock/gomock"
 	management "github.com/rancher/rancher/pkg/apis/management.cattle.io"
 	v3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	"github.com/rancher/wrangler/v3/pkg/generic/fake"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -189,6 +189,119 @@ func TestSyncProviderRefreshConflict(t *testing.T) {
 	assert.Equal(t, now.Format(time.RFC3339), synced.LastRefresh)
 	assert.Contains(t, synced.GroupPrincipals, "activedirectory")
 	assert.Contains(t, synced.ExtraByProvider, "activedirectory")
+}
+
+func TestSyncProviderRefreshUpdateNonConflictError(t *testing.T) {
+	userID := "u-abcdef"
+	attribs := &v3.UserAttribute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: userID,
+		},
+		NeedsRefresh: true,
+	}
+
+	var (
+		userAttributesGetCalledTimes int
+		providerRefreshCalledTimes   int
+	)
+
+	now := time.Now().Truncate(time.Second)
+
+	ctrl := gomock.NewController(t)
+
+	userAttributeClient := fake.NewMockNonNamespacedControllerInterface[*v3.UserAttribute, *v3.UserAttributeList](ctrl)
+	userAttributeClient.EXPECT().Get(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(func(name string, opts metav1.GetOptions) (*v3.UserAttribute, error) {
+		userAttributesGetCalledTimes++
+
+		a := attribs.DeepCopy()
+		if userAttributesGetCalledTimes > 1 {
+			a.LastLogin = &metav1.Time{Time: now}
+		}
+
+		return a, nil
+	})
+	userAttributeClient.EXPECT().Update(gomock.Any()).AnyTimes().DoAndReturn(func(userAttribute *v3.UserAttribute) (*v3.UserAttribute, error) {
+		return nil, fmt.Errorf("some error")
+	})
+
+	controller := UserAttributeController{
+		userAttributes:            userAttributeClient,
+		ensureUserRetentionLabels: func(attribs *v3.UserAttribute) error { return nil },
+		providerRefresh: func(attribs *v3.UserAttribute) (*v3.UserAttribute, error) {
+			providerRefreshCalledTimes++
+			a := attribs.DeepCopy()
+			a.NeedsRefresh = false
+			a.LastRefresh = now.Format(time.RFC3339)
+			a.GroupPrincipals = map[string]v3.Principals{"activedirectory": {}}
+			a.ExtraByProvider = map[string]map[string][]string{"activedirectory": {}}
+			return a, nil
+		},
+	}
+
+	_, err := controller.sync("", attribs)
+	require.Error(t, err)
+
+	assert.Equal(t, 1, providerRefreshCalledTimes)
+	assert.Equal(t, 1, userAttributesGetCalledTimes)
+}
+
+func TestSyncProviderRefreshErrorAfterHandlingConflict(t *testing.T) {
+	userID := "u-abcdef"
+	attribs := &v3.UserAttribute{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: userID,
+		},
+		NeedsRefresh: true,
+	}
+
+	var (
+		userAttributesGetCalledTimes int
+		providerRefreshCalledTimes   int
+	)
+
+	groupResource := schema.GroupResource{
+		Group:    management.GroupName,
+		Resource: v3.UserAttributeResourceName,
+	}
+
+	now := time.Now().Truncate(time.Second)
+
+	ctrl := gomock.NewController(t)
+
+	userAttributeClient := fake.NewMockNonNamespacedControllerInterface[*v3.UserAttribute, *v3.UserAttributeList](ctrl)
+	userAttributeClient.EXPECT().Get(gomock.Any(), gomock.Any()).AnyTimes().DoAndReturn(func(name string, opts metav1.GetOptions) (*v3.UserAttribute, error) {
+		userAttributesGetCalledTimes++
+
+		a := attribs.DeepCopy()
+		if userAttributesGetCalledTimes > 1 {
+			a.LastLogin = &metav1.Time{Time: now}
+		}
+
+		return a, nil
+	})
+	userAttributeClient.EXPECT().Update(gomock.Any()).AnyTimes().DoAndReturn(func(userAttribute *v3.UserAttribute) (*v3.UserAttribute, error) {
+		return nil, apierrors.NewConflict(groupResource, userAttribute.Name, fmt.Errorf("some error"))
+	})
+
+	controller := UserAttributeController{
+		userAttributes:            userAttributeClient,
+		ensureUserRetentionLabels: func(attribs *v3.UserAttribute) error { return nil },
+		providerRefresh: func(attribs *v3.UserAttribute) (*v3.UserAttribute, error) {
+			providerRefreshCalledTimes++
+			a := attribs.DeepCopy()
+			a.NeedsRefresh = false
+			a.LastRefresh = now.Format(time.RFC3339)
+			a.GroupPrincipals = map[string]v3.Principals{"activedirectory": {}}
+			a.ExtraByProvider = map[string]map[string][]string{"activedirectory": {}}
+			return a, nil
+		},
+	}
+
+	_, err := controller.sync("", attribs)
+	require.Error(t, err)
+
+	assert.Equal(t, 1, providerRefreshCalledTimes)
+	assert.Equal(t, 2, userAttributesGetCalledTimes)
 }
 
 func TestSyncGetUserAttributeFails(t *testing.T) {

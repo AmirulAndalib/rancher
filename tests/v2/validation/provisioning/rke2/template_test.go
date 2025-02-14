@@ -1,20 +1,20 @@
-//go:build (validation || extended) && !infra.any && !infra.aks && !infra.eks && !infra.gke && !infra.rke2k3s && !cluster.any && !cluster.custom && !cluster.nodedriver && !sanity && !stress
-
 package rke2
 
 import (
 	"testing"
 	"time"
 
+	"github.com/rancher/rancher/tests/v2/actions/charts"
+	"github.com/rancher/rancher/tests/v2/actions/provisioning"
+	"github.com/rancher/rancher/tests/v2/actions/provisioninginput"
+	"github.com/rancher/rancher/tests/v2/actions/reports"
 	"github.com/rancher/shepherd/clients/rancher"
-	"github.com/rancher/shepherd/extensions/charts"
+	v1 "github.com/rancher/shepherd/clients/rancher/v1"
 	"github.com/rancher/shepherd/extensions/cloudcredentials"
 	"github.com/rancher/shepherd/extensions/clusters"
 	"github.com/rancher/shepherd/extensions/clusters/kubernetesversions"
 	"github.com/rancher/shepherd/extensions/defaults"
 	"github.com/rancher/shepherd/extensions/defaults/stevetypes"
-	"github.com/rancher/shepherd/extensions/provisioning"
-	"github.com/rancher/shepherd/extensions/provisioninginput"
 	"github.com/rancher/shepherd/extensions/steve"
 	"github.com/rancher/shepherd/pkg/config"
 	"github.com/rancher/shepherd/pkg/namegenerator"
@@ -36,7 +36,7 @@ type ClusterTemplateTestSuite struct {
 	standardUserClient *rancher.Client
 	session            *session.Session
 	templateConfig     *provisioninginput.TemplateConfig
-	cloudCredentials   *cloudcredentials.CloudCredential
+	cloudCredentials   *v1.SteveAPIObject
 }
 
 func (r *ClusterTemplateTestSuite) TearDownSuite() {
@@ -55,7 +55,8 @@ func (r *ClusterTemplateTestSuite) SetupSuite() {
 	r.client = client
 
 	provider := provisioning.CreateProvider(r.templateConfig.TemplateProvider)
-	r.cloudCredentials, err = provider.CloudCredFunc(client)
+	cloudCredentialConfig := cloudcredentials.LoadCloudCredential(r.templateConfig.TemplateProvider)
+	r.cloudCredentials, err = provider.CloudCredFunc(client, cloudCredentialConfig)
 	require.NoError(r.T(), err)
 }
 
@@ -71,6 +72,7 @@ func (r *ClusterTemplateTestSuite) TestProvisionRKE2TemplateCluster() {
 	require.NoError(r.T(), err)
 
 	_, cluster, err := clusters.GetProvisioningClusterByName(r.client, clusterName, fleetNamespace)
+	reports.TimeoutClusterReport(cluster, err)
 	require.NoError(r.T(), err)
 
 	provisioning.VerifyCluster(r.T(), r.client, nil, cluster)
