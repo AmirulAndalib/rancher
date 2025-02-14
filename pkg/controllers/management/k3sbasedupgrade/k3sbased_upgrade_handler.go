@@ -1,59 +1,61 @@
 package k3sbasedupgrade
 
 import (
-	"fmt"
-	"strings"
-
-	"github.com/coreos/go-semver/semver"
-	v32 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
-	v33 "github.com/rancher/rancher/pkg/apis/project.cattle.io/v3"
+	mgmtv3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
+	prjv3 "github.com/rancher/rancher/pkg/apis/project.cattle.io/v3"
 	app2 "github.com/rancher/rancher/pkg/app"
-	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
+	"github.com/rancher/rancher/pkg/controllers/managementuser/nodesyncer"
 	"github.com/rancher/rancher/pkg/namespace"
 	"github.com/rancher/rancher/pkg/project"
 	"github.com/rancher/rancher/pkg/ref"
 	planv1 "github.com/rancher/system-upgrade-controller/pkg/apis/upgrade.cattle.io/v1"
 	"github.com/sirupsen/logrus"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-func (h *handler) onClusterChange(key string, cluster *v3.Cluster) (*v3.Cluster, error) {
+const (
+	K3sAppName  = "rancher-k3s-upgrader"
+	Rke2AppName = "rancher-rke2-upgrader"
+)
+
+func (h *handler) onClusterChange(_ string, cluster *mgmtv3.Cluster) (*mgmtv3.Cluster, error) {
 	if cluster == nil || cluster.DeletionTimestamp != nil {
 		return nil, nil
-	}
-	isK3s := cluster.Status.Driver == v32.ClusterDriverK3s
-	isRke2 := cluster.Status.Driver == v32.ClusterDriverRke2
-	// only applies to k3s/rke2 clusters
-	if !isK3s && !isRke2 {
-		return cluster, nil
-	}
-	// Don't allow nil configs to continue for given cluster type
-	if (isK3s && cluster.Spec.K3sConfig == nil) || (isRke2 && cluster.Spec.Rke2Config == nil) {
-		return cluster, nil
 	}
 
 	var (
 		updateVersion string
-		strategy      v32.ClusterUpgradeStrategy
+		strategy      mgmtv3.ClusterUpgradeStrategy
 	)
-	switch {
-	case isK3s:
+
+	// only applies to imported k3s/rke2 clusters
+	if cluster.Status.Driver == mgmtv3.ClusterDriverK3s {
+		if cluster.Spec.K3sConfig == nil {
+			return cluster, nil
+		}
 		updateVersion = cluster.Spec.K3sConfig.Version
 		strategy = cluster.Spec.K3sConfig.ClusterUpgradeStrategy
-	case isRke2:
+	} else if cluster.Status.Driver == mgmtv3.ClusterDriverRke2 {
+		if cluster.Spec.Rke2Config == nil {
+			return cluster, nil
+		}
 		updateVersion = cluster.Spec.Rke2Config.Version
 		strategy = cluster.Spec.Rke2Config.ClusterUpgradeStrategy
-
+	} else {
+		return cluster, nil
 	}
+
+	// no version set on imported cluster
 	if updateVersion == "" {
 		return cluster, nil
 	}
 
 	// Check if the cluster is undergoing a Kubernetes version upgrade, and that
 	// all downstream nodes also need the upgrade
-	isNewer, err := IsNewerVersion(cluster.Status.Version.GitVersion, updateVersion)
+	isNewer, err := nodesyncer.IsNewerVersion(cluster.Status.Version.GitVersion, updateVersion)
 	if err != nil {
 		return cluster, err
 	}
@@ -64,14 +66,27 @@ func (h *handler) onClusterChange(key string, cluster *v3.Cluster) (*v3.Cluster,
 		}
 		if !needsUpgrade {
 			// if upgrade was in progress, make sure to set the state back
-			if v32.ClusterConditionUpgraded.IsUnknown(cluster) {
-				v32.ClusterConditionUpgraded.True(cluster)
-				v32.ClusterConditionUpgraded.Message(cluster, "")
+			if mgmtv3.ClusterConditionUpgraded.IsUnknown(cluster) {
+				logrus.Infof("[k3s-based-upgrader] finished upgrading cluster [%s]", cluster.Name)
+				mgmtv3.ClusterConditionUpgraded.True(cluster)
+				mgmtv3.ClusterConditionUpgraded.Message(cluster, "")
 				return h.clusterClient.Update(cluster)
 			}
 			return cluster, nil
 		}
 
+	}
+
+	if mgmtv3.ClusterConditionUpgraded.IsTrue(cluster) {
+		logrus.Infof("[k3s-based-upgrader] upgrading cluster [%s] version from [%s] to [%s]",
+			cluster.Name, cluster.Status.Version.GitVersion, updateVersion)
+		if isNewer {
+			logrus.Debugf("[k3s-based-upgrader] upgrading cluster [%s] because cluster version [%s] is newer than observed version [%s]",
+				cluster.Name, updateVersion, cluster.Status.Version.GitVersion)
+		} else {
+			logrus.Debugf("[k3s-based-upgrader] upgrading cluster [%s] because cluster version [%s] is newer than observed node version",
+				cluster.Name, updateVersion)
+		}
 	}
 
 	// set cluster upgrading status
@@ -81,12 +96,12 @@ func (h *handler) onClusterChange(key string, cluster *v3.Cluster) (*v3.Cluster,
 	}
 
 	// create or update k3supgradecontroller if necessary
-	if err = h.deployK3sBasedUpgradeController(cluster.Name, isK3s, isRke2); err != nil {
+	if err = h.deployK3sBasedUpgradeController(cluster); err != nil {
 		return cluster, err
 	}
 
 	// deploy plans into downstream cluster
-	if err = h.deployPlans(cluster, isK3s, isRke2); err != nil {
+	if err = h.deployPlans(cluster); err != nil {
 		return cluster, err
 	}
 
@@ -95,14 +110,14 @@ func (h *handler) onClusterChange(key string, cluster *v3.Cluster) (*v3.Cluster,
 
 // deployK3sBaseUpgradeController creates a rancher k3s/rke2 upgrader controller if one does not exist.
 // Updates k3s upgrader controller if one exists and is not the newest available version.
-func (h *handler) deployK3sBasedUpgradeController(clusterName string, isK3s, isRke2 bool) error {
-	userCtx, err := h.manager.UserContextNoControllers(clusterName)
+func (h *handler) deployK3sBasedUpgradeController(cluster *mgmtv3.Cluster) error {
+	userCtx, err := h.manager.UserContextNoControllers(cluster.Name)
 	if err != nil {
 		return err
 	}
 
 	projectLister := userCtx.Management.Management.Projects("").Controller().Lister()
-	systemProject, err := project.GetSystemProject(clusterName, projectLister)
+	systemProject, err := project.GetSystemProject(cluster.Name, projectLister)
 	if err != nil {
 		return err
 	}
@@ -113,12 +128,12 @@ func (h *handler) deployK3sBasedUpgradeController(clusterName string, isK3s, isR
 		return err
 	}
 
-	latestTemplateVersion, err := h.catalogManager.LatestAvailableTemplateVersion(template, clusterName)
+	latestTemplateVersion, err := h.catalogManager.LatestAvailableTemplateVersion(template, cluster.Name)
 	if err != nil {
 		return err
 	}
 
-	creator, err := h.systemAccountManager.GetSystemUser(clusterName)
+	creator, err := h.systemAccountManager.GetSystemUser(cluster.Name)
 	if err != nil {
 		return err
 	}
@@ -126,7 +141,7 @@ func (h *handler) deployK3sBasedUpgradeController(clusterName string, isK3s, isR
 	_, systemProjectName := ref.Parse(systemProjectID)
 
 	nsClient := userCtx.Core.Namespaces("")
-	appProjectName, err := app2.EnsureAppProjectName(nsClient, systemProjectName, clusterName, systemUpgradeNS, creator.Name)
+	appProjectName, err := app2.EnsureAppProjectName(nsClient, systemProjectName, cluster.Name, systemUpgradeNS, creator.Name)
 	if err != nil {
 		return err
 	}
@@ -135,27 +150,28 @@ func (h *handler) deployK3sBasedUpgradeController(clusterName string, isK3s, isR
 	appClient := userCtx.Management.Project.Apps("")
 
 	latestVersionID := latestTemplateVersion.ExternalID
-	var appname string
+	var appName string
 	switch {
-	case isK3s:
-		appname = "rancher-k3s-upgrader"
-	case isRke2:
-		appname = "rancher-rke2-upgrader"
+	case cluster.Status.Driver == mgmtv3.ClusterDriverK3s:
+		appName = K3sAppName
+	case cluster.Status.Driver == mgmtv3.ClusterDriverRke2:
+		appName = Rke2AppName
 	}
-	app, err := appLister.Get(systemProjectName, appname)
+	app, err := appLister.Get(systemProjectName, appName)
 	if err != nil {
 		if !errors.IsNotFound(err) {
 			return err
 		}
-		desiredApp := &v33.App{
+		logrus.Infof("[k3s-based-upgrader] installing app [%s] in cluster [%s]", appName, cluster.Name)
+		desiredApp := &prjv3.App{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      appname,
+				Name:      appName,
 				Namespace: systemProjectName,
 				Annotations: map[string]string{
 					"field.cattle.io/creatorId": creator.Name,
 				},
 			},
-			Spec: v33.AppSpec{
+			Spec: prjv3.AppSpec{
 				Description:     "Upgrade controller for k3s based clusters",
 				ExternalID:      latestVersionID,
 				ProjectName:     appProjectName,
@@ -169,8 +185,8 @@ func (h *handler) deployK3sBasedUpgradeController(clusterName string, isK3s, isR
 		}
 	} else {
 		if !checkDeployed(app) {
-			if !v33.AppConditionForceUpgrade.IsUnknown(app) {
-				v33.AppConditionForceUpgrade.Unknown(app)
+			if !prjv3.AppConditionForceUpgrade.IsUnknown(app) {
+				prjv3.AppConditionForceUpgrade.Unknown(app)
 			}
 			logrus.Warnln("force redeploying system-upgrade-controller")
 			if _, err = appClient.Update(app); err != nil {
@@ -185,6 +201,7 @@ func (h *handler) deployK3sBasedUpgradeController(clusterName string, isK3s, isR
 
 		desiredApp := app.DeepCopy()
 		desiredApp.Spec.ExternalID = latestVersionID
+		logrus.Infof("[k3s-based-upgrader] updating app [%s] in cluster [%s]", appName, cluster.Name)
 		// new version of k3s upgrade available, or the valuesYaml have changed, update app
 		if _, err = appClient.Update(desiredApp); err != nil {
 			return err
@@ -194,51 +211,29 @@ func (h *handler) deployK3sBasedUpgradeController(clusterName string, isK3s, isR
 	return nil
 }
 
-// IsNewerVersion returns true if updated versions semver is newer and false if its
-// semver is older. If semver is equal then metadata is alphanumerically compared.
-func IsNewerVersion(prevVersion, updatedVersion string) (bool, error) {
-	parseErrMsg := "failed to parse version: %v"
-	prevVer, err := semver.NewVersion(strings.TrimPrefix(prevVersion, "v"))
-	if err != nil {
-		return false, fmt.Errorf(parseErrMsg, err)
-	}
-
-	updatedVer, err := semver.NewVersion(strings.TrimPrefix(updatedVersion, "v"))
-	if err != nil {
-		return false, fmt.Errorf(parseErrMsg, err)
-	}
-
-	switch updatedVer.Compare(*prevVer) {
-	case -1:
-		return false, nil
-	case 1:
-		return true, nil
-	default:
-		// using metadata to determine precedence is against semver standards
-		// this is ignored because it because k3s uses it to precedence between
-		// two versions based on same k8s version
-		return updatedVer.Metadata > prevVer.Metadata, nil
-	}
-}
-
 // nodeNeedsUpgrade checks all nodes in cluster, returns true if they still need to be upgraded
-func (h *handler) nodesNeedUpgrade(cluster *v3.Cluster, version string) (bool, error) {
+func (h *handler) nodesNeedUpgrade(cluster *mgmtv3.Cluster, version string) (bool, error) {
 	v3NodeList, err := h.nodeLister.List(cluster.Name, labels.Everything())
 	if err != nil {
 		return false, err
 	}
 	for _, node := range v3NodeList {
-		isNewer, err := IsNewerVersion(node.Status.InternalNodeStatus.NodeInfo.KubeletVersion, version)
-		if err != nil {
-			return false, err
-		}
-		if isNewer {
-			return true, nil
+		// if node is windows, skip upgrade check
+		if os, ok := node.Status.NodeLabels[corev1.LabelOSStable]; ok && os != "windows" {
+			isNewer, err := nodesyncer.IsNewerVersion(node.Status.InternalNodeStatus.NodeInfo.KubeletVersion, version)
+			if err != nil {
+				return false, err
+			}
+			if isNewer {
+				logrus.Debugf("[k3s-based-upgrader] cluster [%s] version [%s] is newer than observed node [%s] version [%s]",
+					cluster.Name, version, node.Name, node.Status.InternalNodeStatus.NodeInfo.KubeletVersion)
+				return true, nil
+			}
 		}
 	}
 	return false, nil
 }
 
-func checkDeployed(app *v33.App) bool {
-	return v33.AppConditionDeployed.IsTrue(app) || v33.AppConditionInstalled.IsTrue(app)
+func checkDeployed(app *prjv3.App) bool {
+	return prjv3.AppConditionDeployed.IsTrue(app) || prjv3.AppConditionInstalled.IsTrue(app)
 }

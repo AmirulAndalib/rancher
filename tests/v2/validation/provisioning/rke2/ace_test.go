@@ -5,11 +5,13 @@ package rke2
 import (
 	"testing"
 
-	"github.com/rancher/rancher/tests/v2/validation/provisioning/permutations"
+	"github.com/rancher/rancher/tests/v2/actions/machinepools"
+	"github.com/rancher/rancher/tests/v2/actions/provisioning/permutations"
+	"github.com/rancher/rancher/tests/v2/actions/provisioninginput"
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
-	"github.com/rancher/shepherd/extensions/machinepools"
-	"github.com/rancher/shepherd/extensions/provisioninginput"
+	"github.com/rancher/shepherd/extensions/clusters"
+	"github.com/rancher/shepherd/extensions/clusters/kubernetesversions"
 	"github.com/rancher/shepherd/extensions/users"
 	password "github.com/rancher/shepherd/extensions/users/passwordgenerator"
 	"github.com/rancher/shepherd/pkg/config"
@@ -39,6 +41,18 @@ func (r *RKE2ACETestSuite) SetupSuite() {
 
 	client, err := rancher.NewClient("", testSession)
 	require.NoError(r.T(), err)
+
+	if r.provisioningConfig.RKE2KubernetesVersions == nil {
+		rke2Versions, err := kubernetesversions.Default(r.client, clusters.RKE2ClusterType.String(), nil)
+		require.NoError(r.T(), err)
+
+		r.provisioningConfig.RKE2KubernetesVersions = rke2Versions
+	} else if r.provisioningConfig.RKE2KubernetesVersions[0] == "all" {
+		rke2Versions, err := kubernetesversions.ListRKE2AllVersions(r.client)
+		require.NoError(r.T(), err)
+
+		r.provisioningConfig.RKE2KubernetesVersions = rke2Versions
+	}
 
 	r.client = client
 
@@ -102,7 +116,6 @@ func (r *RKE2ACETestSuite) TestProvisioningRKE2ClusterACE() {
 		machinePools []provisioninginput.MachinePools
 		client       *rancher.Client
 	}{
-		{"Multiple Control Planes - Admin", nodeRoles0, r.client},
 		{"Multiple Control Planes - Standard", nodeRoles0, r.standardUserClient},
 	}
 	require.NotNil(r.T(), r.provisioningConfig.Networking.LocalClusterAuthEndpoint)

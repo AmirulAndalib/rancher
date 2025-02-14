@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -12,10 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"crypto/tls"
-	"crypto/x509"
-
 	"github.com/pkg/errors"
+	"github.com/rancher/rancher/pkg/jailer"
+	"github.com/rancher/rancher/pkg/settings"
 	"github.com/sirupsen/logrus"
 )
 
@@ -175,6 +176,16 @@ func extractConfig(baseDir, extractedConfig string) error {
 			if err != nil {
 				return fmt.Errorf("error reinitializing config (Mkdirall). Config Dir: %v. Dir: %v. Error: %v", baseDir, info.Name(), err)
 			}
+			if os.Getenv("CATTLE_DEV_MODE") == "" && settings.UnprivilegedJailUser.Get() == "true" {
+				if err := jailer.SetJailOwnership(filePath); err != nil {
+					return fmt.Errorf("error updating perms for %s: %w", filePath, err)
+				}
+			} else {
+				// Make sure to preserve the directory UID and GID.
+				if err = os.Chown(filePath, header.Uid, header.Gid); err != nil {
+					return fmt.Errorf("error changing ownership of directory %s: %w", filePath, err)
+				}
+			}
 			continue
 		}
 
@@ -182,7 +193,16 @@ func extractConfig(baseDir, extractedConfig string) error {
 		if err != nil {
 			return fmt.Errorf("error reinitializing config (OpenFile). Config Dir: %v. File: %v. Error: %v", baseDir, info.Name(), err)
 		}
-
+		if os.Getenv("CATTLE_DEV_MODE") == "" && settings.UnprivilegedJailUser.Get() == "true" {
+			if err := jailer.SetJailOwnership(filePath); err != nil {
+				return fmt.Errorf("error updating perms for %s: %w", filePath, err)
+			}
+		} else {
+			// Make sure to preserve the file UID and GID.
+			if err = os.Chown(filePath, header.Uid, header.Gid); err != nil {
+				return fmt.Errorf("error changing ownership of file %s: %w", filePath, err)
+			}
+		}
 		_, err = io.Copy(file, tarReader)
 		file.Close()
 		if err != nil {

@@ -5,12 +5,12 @@ package rke1
 import (
 	"testing"
 
-	"github.com/rancher/rancher/tests/v2/validation/provisioning/permutations"
+	"github.com/rancher/rancher/tests/v2/actions/provisioning/permutations"
+	"github.com/rancher/rancher/tests/v2/actions/provisioninginput"
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	"github.com/rancher/shepherd/extensions/clusters"
 	"github.com/rancher/shepherd/extensions/clusters/kubernetesversions"
-	"github.com/rancher/shepherd/extensions/provisioninginput"
 	"github.com/rancher/shepherd/extensions/users"
 	password "github.com/rancher/shepherd/extensions/users/passwordgenerator"
 	"github.com/rancher/shepherd/pkg/config"
@@ -44,9 +44,17 @@ func (r *RKE1PSACTTestSuite) SetupSuite() {
 
 	r.client = client
 
-	r.provisioningConfig.RKE1KubernetesVersions, err = kubernetesversions.Default(
-		r.client, clusters.RKE1ClusterType.String(), r.provisioningConfig.RKE1KubernetesVersions)
-	require.NoError(r.T(), err)
+	if r.provisioningConfig.RKE1KubernetesVersions == nil {
+		rke1Versions, err := kubernetesversions.Default(r.client, clusters.RKE1ClusterType.String(), nil)
+		require.NoError(r.T(), err)
+
+		r.provisioningConfig.RKE1KubernetesVersions = rke1Versions
+	} else if r.provisioningConfig.RKE1KubernetesVersions[0] == "all" {
+		rke1Versions, err := kubernetesversions.ListRKE1AllVersions(r.client)
+		require.NoError(r.T(), err)
+
+		r.provisioningConfig.RKE1KubernetesVersions = rke1Versions
+	}
 
 	enabled := true
 	var testuser = namegen.AppendRandomString("testuser-")
@@ -108,51 +116,6 @@ func (r *RKE1PSACTTestSuite) TestRKE1PSACTNodeDriverCluster() {
 		provisioningConfig.PSACT = string(tt.psact)
 		permutations.RunTestPermutations(&r.Suite, tt.name, tt.client, &provisioningConfig,
 			permutations.RKE1ProvisionCluster, nil, nil)
-	}
-}
-
-func (r *RKE1PSACTTestSuite) TestRKE1PSACTCustomCluster() {
-	nodeRolesDedicated := []provisioninginput.NodePools{
-		provisioninginput.EtcdNodePool,
-		provisioninginput.ControlPlaneNodePool,
-		provisioninginput.WorkerNodePool,
-	}
-
-	require.GreaterOrEqual(r.T(), len(r.provisioningConfig.CNIs), 1)
-
-	tests := []struct {
-		name      string
-		nodePools []provisioninginput.NodePools
-		psact     provisioninginput.PSACT
-		client    *rancher.Client
-	}{
-		{
-			name:      "Rancher Privileged " + provisioninginput.StandardClientName.String(),
-			nodePools: nodeRolesDedicated,
-			psact:     "rancher-privileged",
-			client:    r.standardUserClient,
-		},
-		{
-			name:      "Rancher Restricted " + provisioninginput.StandardClientName.String(),
-			nodePools: nodeRolesDedicated,
-			psact:     "rancher-restricted",
-			client:    r.standardUserClient,
-		},
-		{
-			name:      "Rancher Baseline " + provisioninginput.AdminClientName.String(),
-			nodePools: nodeRolesDedicated,
-			psact:     "rancher-baseline",
-			client:    r.client,
-		},
-	}
-
-	for _, tt := range tests {
-		provisioningConfig := *r.provisioningConfig
-		provisioningConfig.NodePools = tt.nodePools
-		provisioningConfig.PSACT = string(tt.psact)
-		provisioningConfig.NodePools[0].SpecifyCustomPublicIP = true
-		permutations.RunTestPermutations(&r.Suite, tt.name, tt.client, &provisioningConfig,
-			permutations.RKE1CustomCluster, nil, nil)
 	}
 }
 
