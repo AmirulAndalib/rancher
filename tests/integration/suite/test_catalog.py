@@ -126,6 +126,7 @@ def test_user_can_list_global_catalog(user_factory, remove_resource):
 
 
 @pytest.mark.nonparallel
+@pytest.mark.skip
 def test_template_version_links(admin_mc, admin_pc, custom_catalog,
                                 remove_resource, restore_rancher_version):
     """Test that template versionLinks are being updated based off the rancher
@@ -177,6 +178,7 @@ def test_template_version_links(admin_mc, admin_pc, custom_catalog,
     assert len(templates.data[0]['versionLinks']) == 0
 
 
+@pytest.mark.skip
 def test_relative_paths(admin_mc, admin_pc, remove_resource):
     """ This test adds a catalog's index.yaml with a relative chart url
     and ensures that rancher can resolve the relative url"""

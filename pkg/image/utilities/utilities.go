@@ -1,6 +1,7 @@
 package utilities
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -9,9 +10,9 @@ import (
 	"strings"
 
 	"github.com/coreos/go-semver/semver"
-	kd "github.com/rancher/rancher/pkg/controllers/management/kontainerdrivermetadata"
 	img "github.com/rancher/rancher/pkg/image"
 	ext "github.com/rancher/rancher/pkg/image/external"
+	kd "github.com/rancher/rancher/pkg/kontainerdrivermetadata"
 	"github.com/rancher/rancher/pkg/settings"
 	"github.com/rancher/rke/types/image"
 	"github.com/rancher/rke/types/kdm"
@@ -148,7 +149,7 @@ func GatherTargetImagesAndSources(systemChartsPath, chartsPath string, imagesFro
 	}
 
 	exportConfig.OsType = img.Windows
-	targetWindowsImages, targetWindowsImagesAndSources, err := img.GetImages(exportConfig, nil, []string{getWindowsAgentImage(), winsAgentUpdateImage}, windowsInfo.RKESystemImages)
+	targetWindowsImages, targetWindowsImagesAndSources, err := img.GetImages(exportConfig, nil, []string{winsAgentUpdateImage}, windowsInfo.RKESystemImages)
 	if err != nil {
 		return ImageTargetsAndSources{}, err
 	}
@@ -324,30 +325,34 @@ func checkImage(image string) error {
 
 func writeSliceToFile(filename string, versions []string) error {
 	log.Printf("Creating %s\n", filename)
+
+	dir := filepath.Dir(filename)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directories: %w", err)
+	}
+
 	save, err := os.Create(filename)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create file: %w", err)
 	}
-	defer save.Close()
-	save.Chmod(0755)
+
+	defer func() {
+		if cerr := save.Close(); cerr != nil {
+			err = errors.Join(err, cerr)
+		}
+	}()
+
+	if err := save.Chmod(0755); err != nil {
+		return fmt.Errorf("failed to set file permissions: %w", err)
+	}
 
 	for _, version := range versions {
-		fmt.Fprintln(save, version)
+		if _, err := fmt.Fprintln(save, version); err != nil {
+			return fmt.Errorf("failed to write to file: %w", err)
+		}
 	}
 
 	return nil
-}
-
-func getWindowsAgentImage() string {
-	tag, ok := os.LookupEnv("TAG")
-	if !ok {
-		return ""
-	}
-	repo, ok := os.LookupEnv("REPO")
-	if !ok {
-		return ""
-	}
-	return fmt.Sprintf("%s/rancher-agent:%s", repo, tag)
 }
 
 func getScript(arch, fileType string) string {

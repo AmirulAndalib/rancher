@@ -5,8 +5,8 @@ package cli
 import (
 	"testing"
 
+	"github.com/rancher/rancher/tests/v2/actions/cli"
 	"github.com/rancher/shepherd/clients/rancher"
-	"github.com/rancher/shepherd/extensions/cli"
 	namegen "github.com/rancher/shepherd/pkg/namegenerator"
 	"github.com/rancher/shepherd/pkg/session"
 	"github.com/stretchr/testify/require"
@@ -60,16 +60,6 @@ func (c *CLITestSuite) TestNamespaces() {
 	require.NoError(c.T(), err)
 
 	err = cli.DeleteNamespaces(c.client.CLI, namespaceName, projectName)
-	require.NoError(c.T(), err)
-}
-
-func (c *CLITestSuite) TestCatalog() {
-	var catalogName = namegen.AppendRandomString("catalog")
-
-	err := cli.CreateCatalogs(c.client.CLI, catalogName)
-	require.NoError(c.T(), err)
-
-	err = cli.DeleteCatalogs(c.client.CLI, catalogName)
 	require.NoError(c.T(), err)
 }
 

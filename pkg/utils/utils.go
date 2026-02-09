@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 
@@ -16,4 +17,12 @@ func FormatResourceList(resources v1.ResourceList) string {
 	// sort the results for consistent log output
 	sort.Strings(resourceStrings)
 	return strings.Join(resourceStrings, ",")
+}
+
+// IsPlainIPV6 will return true if the given address is a plain IPV6 address and not encapsulated or similar.
+func IsPlainIPV6(address string) bool {
+	if net.ParseIP(address) != nil && strings.Count(address, ":") >= 2 {
+		return true
+	}
+	return false
 }

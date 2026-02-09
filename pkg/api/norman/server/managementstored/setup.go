@@ -58,7 +58,7 @@ import (
 	projectclient "github.com/rancher/rancher/pkg/client/generated/project/v3"
 	"github.com/rancher/rancher/pkg/clustermanager"
 	"github.com/rancher/rancher/pkg/clusterrouter"
-	md "github.com/rancher/rancher/pkg/controllers/management/kontainerdrivermetadata"
+	md "github.com/rancher/rancher/pkg/kontainerdrivermetadata"
 	"github.com/rancher/rancher/pkg/namespace"
 	"github.com/rancher/rancher/pkg/nodeconfig"
 	managementschema "github.com/rancher/rancher/pkg/schemas/management.cattle.io/v3"
@@ -177,7 +177,7 @@ func Setup(ctx context.Context, apiContext *config.ScaledContext, clusterManager
 	authn.SetRTBStore(ctx, schemas.Schema(&managementschema.Version, client.ProjectRoleTemplateBindingType), apiContext)
 	nodeStore.SetupStore(schemas.Schema(&managementschema.Version, client.NodeType))
 	projectaction.SetProjectStore(schemas.Schema(&managementschema.Version, client.ProjectType), apiContext)
-	setupScopedTypes(schemas)
+	setupScopedTypes(schemas, apiContext)
 	setupPasswordTypes(ctx, schemas, apiContext)
 
 	multiclusterapp.SetMemberStore(ctx, schemas.Schema(&managementschema.Version, client.MultiClusterAppType), apiContext)
@@ -192,7 +192,8 @@ func setupPasswordTypes(ctx context.Context, schemas *types.Schemas, management 
 	passwordStore.SetPasswordStore(schemas, secretStore, nsStore)
 }
 
-func setupScopedTypes(schemas *types.Schemas) {
+func setupScopedTypes(schemas *types.Schemas, management *config.ScaledContext) {
+	projectLister := management.Management.Projects("").Controller().Lister()
 	for _, schema := range schemas.Schemas() {
 		if schema.Scope != types.NamespaceScope || schema.Store == nil || schema.Store.Context() != config.ManagementStorageContext {
 			continue
@@ -208,7 +209,7 @@ func setupScopedTypes(schemas *types.Schemas) {
 				continue
 			}
 
-			schema.Store = scoped.NewScopedStore(key, schema.Store)
+			schema.Store = scoped.NewScopedStore(key, schema.Store, projectLister)
 			ns.Required = false
 			schema.ResourceFields["namespaceId"] = ns
 			break
@@ -440,6 +441,7 @@ func SecretTypes(ctx context.Context, schemas *types.Schemas, management *config
 		management.Core.Namespaces(""),
 		management.Management.NodeTemplates("").Controller().Lister(),
 		management.Wrangler.Provisioning.Cluster().Cache(),
+		management.Management.Tokens("").Controller().Lister(),
 	)
 	credSchema.Validator = cred.Validator
 }
@@ -587,14 +589,10 @@ func RoleTemplate(schemas *types.Schemas, management *config.ScaledContext) {
 func KontainerDriver(schemas *types.Schemas, management *config.ScaledContext) {
 	schema := schemas.Schema(&managementschema.Version, client.KontainerDriverType)
 	metadataHandler := md.MetadataController{
-		SystemImagesLister:   management.Management.RkeK8sSystemImages("").Controller().Lister(),
-		SystemImages:         management.Management.RkeK8sSystemImages(""),
-		ServiceOptionsLister: management.Management.RkeK8sServiceOptions("").Controller().Lister(),
-		ServiceOptions:       management.Management.RkeK8sServiceOptions(""),
-		AddonsLister:         management.Management.RkeAddons("").Controller().Lister(),
-		Addons:               management.Management.RkeAddons(""),
-		SettingLister:        management.Management.Settings("").Controller().Lister(),
-		Settings:             management.Management.Settings(""),
+		SystemImagesController:   management.Wrangler.Mgmt.RkeK8sSystemImage(),
+		ServiceOptionsController: management.Wrangler.Mgmt.RkeK8sServiceOption(),
+		Addons:                   management.Wrangler.Mgmt.RkeAddon(),
+		Settings:                 management.Wrangler.Mgmt.Setting(),
 	}
 
 	handler := kontainerdriver.ActionHandler{

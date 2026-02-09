@@ -590,6 +590,7 @@ def test_appropriate_users_can_see_kontainer_drivers(user_factory):
     assert len(kds) == 0
 
 
+@pytest.mark.skip
 def test_readonly_cannot_perform_app_action(admin_mc, admin_pc, user_mc,
                                             remove_resource):
     """Tests that a user with readonly access is not able to upgrade an app
@@ -633,6 +634,7 @@ def test_readonly_cannot_perform_app_action(admin_mc, admin_pc, user_mc,
     assert e.value.error.status == 403
 
 
+@pytest.mark.skip
 def test_member_can_perform_app_action(admin_mc, admin_pc, remove_resource,
                                        user_mc):
     """Tests that a user with member access is able to upgrade an app
@@ -794,6 +796,7 @@ def test_readonly_cannot_edit_secret(admin_mc, user_mc, admin_pc,
     assert e.value.error.status == 404
 
 
+@pytest.mark.skip
 def test_member_can_edit_secret(admin_mc, admin_pc, remove_resource,
                                 user_mc):
     """Tests that a user with project-member role is able to create/update

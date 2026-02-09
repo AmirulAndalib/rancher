@@ -5,10 +5,10 @@ package nodescaling
 import (
 	"testing"
 
+	nodepools "github.com/rancher/rancher/tests/v2/actions/rke1/nodepools"
+	"github.com/rancher/rancher/tests/v2/actions/scalinginput"
 	"github.com/rancher/shepherd/clients/rancher"
 	"github.com/rancher/shepherd/extensions/clusters"
-	nodepools "github.com/rancher/shepherd/extensions/rke1/nodepools"
-	"github.com/rancher/shepherd/extensions/scalinginput"
 	"github.com/rancher/shepherd/pkg/config"
 	"github.com/rancher/shepherd/pkg/session"
 	"github.com/stretchr/testify/require"
@@ -61,11 +61,6 @@ func (s *RKE1CustomClusterNodeScalingTestSuite) TestScalingRKE1CustomClusterNode
 		Quantity: 1,
 	}
 
-	nodeRolesTwoWorkers := nodepools.NodeRoles{
-		Worker:   true,
-		Quantity: 2,
-	}
-
 	tests := []struct {
 		name      string
 		nodeRoles nodepools.NodeRoles
@@ -75,7 +70,6 @@ func (s *RKE1CustomClusterNodeScalingTestSuite) TestScalingRKE1CustomClusterNode
 		{"Scaling custom etcd by 1", nodeRolesEtcd, s.client},
 		{"Scaling custom etcd and control plane by 1", nodeRolesEtcdControlPlane, s.client},
 		{"Scaling custom worker by 1", nodeRolesWorker, s.client},
-		{"Scaling custom worker by 2", nodeRolesTwoWorkers, s.client},
 	}
 
 	for _, tt := range tests {

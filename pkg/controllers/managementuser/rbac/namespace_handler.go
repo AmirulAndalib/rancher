@@ -15,7 +15,6 @@ import (
 	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	namespaceutil "github.com/rancher/rancher/pkg/namespace"
 	"github.com/rancher/rancher/pkg/project"
-	projectpkg "github.com/rancher/rancher/pkg/project"
 	"github.com/sirupsen/logrus"
 	v1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -118,11 +117,11 @@ func (n *nsLifecycle) syncNS(obj *v1.Namespace) (bool, error) {
 
 	hasPRTBs, err := n.ensurePRTBAddToNamespace(obj)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("ensuring PRTBs are added to namespace %s: %w", obj.Name, err)
 	}
 
 	if err := n.reconcileNamespaceProjectClusterRole(obj); err != nil {
-		return false, err
+		return false, fmt.Errorf("reconciling namespace %s project cluster roles: %w", obj.Name, err)
 	}
 
 	return hasPRTBs, nil
@@ -131,7 +130,7 @@ func (n *nsLifecycle) syncNS(obj *v1.Namespace) (bool, error) {
 func (n *nsLifecycle) assignToInitialProject(ns *v1.Namespace) error {
 	initialProjectsToNamespaces, err := getDefaultAndSystemProjectsToNamespaces()
 	if err != nil {
-		return err
+		return fmt.Errorf("assigning namespace %s to initial projects: %w", ns.Name, err)
 	}
 	for projectName, namespaces := range initialProjectsToNamespaces {
 		for _, nsToCheck := range namespaces {
@@ -142,7 +141,7 @@ func (n *nsLifecycle) assignToInitialProject(ns *v1.Namespace) error {
 				}
 				projects, err := n.m.projectLister.List(n.m.clusterName, initialProjectToLabels[projectName].AsSelector())
 				if err != nil {
-					return err
+					return fmt.Errorf("listing projects for cluster %s: %w", n.m.clusterName, err)
 				}
 				if len(projects) == 0 {
 					continue
@@ -165,15 +164,15 @@ func (n *nsLifecycle) assignToInitialProject(ns *v1.Namespace) error {
 }
 
 func (n *nsLifecycle) GetSystemProjectName() (string, error) {
-	projects, err := n.m.projectLister.List(n.m.clusterName, initialProjectToLabels[projectpkg.System].AsSelector())
+	projects, err := n.m.projectLister.List(n.m.clusterName, initialProjectToLabels[project.System].AsSelector())
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("getting system project name for cluster %s: %w", n.m.clusterName, err)
 	}
 	if len(projects) == 0 {
 		return "", nil
 	}
 	if len(projects) > 1 {
-		return "", fmt.Errorf("cluster [%s] contains more than 1 [%s] project", n.m.clusterName, projectpkg.System)
+		return "", fmt.Errorf("cluster [%s] contains more than 1 [%s] project", n.m.clusterName, project.System)
 	}
 	if projects[0] == nil {
 		return "", nil
@@ -189,6 +188,7 @@ func (n *nsLifecycle) ensurePRTBAddToNamespace(ns *v1.Namespace) (bool, error) {
 	// Get project that contain this namespace
 	projectID := ns.Annotations[projectIDAnnotation]
 	if len(projectID) == 0 {
+		logrus.Debugf("Namespace %s does not belong to a project - deleting rolebindings", ns.Name)
 		// if namespace does not belong to a project, delete all rolebindings from that namespace that were created for a PRTB
 		// such rolebindings will have the label "authz.cluster.cattle.io/rtb-owner" prior to 2.5 and
 		// "authz.cluster.cattle.io/rtb-owner-updated" 2.5 onwards
@@ -238,7 +238,11 @@ func (n *nsLifecycle) ensurePRTBAddToNamespace(ns *v1.Namespace) (bool, error) {
 
 		rt, err := n.m.rtLister.Get("", prtb.RoleTemplateName)
 		if err != nil {
-			return false, errors.Wrapf(err, "couldn't get role template %v", prtb.RoleTemplateName)
+			if apierrors.IsNotFound(err) {
+				logrus.Warnf("ProjectRoleTemplateBinding %q sets a non-existing role template %q. Skipping.", prtb.Name, prtb.RoleTemplateName)
+				continue
+			}
+			return false, err
 		}
 
 		roles := map[string]*v3.RoleTemplate{}
@@ -257,7 +261,15 @@ func (n *nsLifecycle) ensurePRTBAddToNamespace(ns *v1.Namespace) (bool, error) {
 
 	var namespace string
 	if parts := strings.SplitN(projectID, ":", 2); len(parts) == 2 && len(parts[1]) > 0 {
-		namespace = parts[1]
+		project, err := n.rq.ProjectLister.Get(parts[0], parts[1])
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				logrus.Warnf("Namespace %s references project %s in namespace %s which does not exist", ns.Name, parts[1], parts[0])
+				return hasPRTBs, nil
+			}
+			return hasPRTBs, err
+		}
+		namespace = project.GetProjectBackingNamespace()
 	} else {
 		return hasPRTBs, nil
 	}

@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/rancher/rancher/tests/v2/validation/provisioning/permutations"
+	"github.com/rancher/rancher/tests/v2/actions/clusters"
+	"github.com/rancher/rancher/tests/v2/actions/machinepools"
+	"github.com/rancher/rancher/tests/v2/actions/provisioning"
+	"github.com/rancher/rancher/tests/v2/actions/provisioning/permutations"
+	"github.com/rancher/rancher/tests/v2/actions/provisioninginput"
+	"github.com/rancher/rancher/tests/v2/actions/reports"
 	"github.com/rancher/shepherd/clients/rancher"
-	"github.com/rancher/shepherd/extensions/clusters"
-	"github.com/rancher/shepherd/extensions/machinepools"
-	"github.com/rancher/shepherd/extensions/provisioning"
-	"github.com/rancher/shepherd/extensions/provisioninginput"
 	"github.com/rancher/shepherd/pkg/config"
 	namegen "github.com/rancher/shepherd/pkg/namegenerator"
 	"github.com/rancher/shepherd/pkg/session"
@@ -104,6 +105,7 @@ func (r *HostnameTruncationTestSuite) TestProvisioningRKE2ClusterTruncation() {
 				rke2Provider, _, _, _ := permutations.GetClusterProvider(permutations.RKE2ProvisionCluster, (*testConfig.Providers)[0], r.clustersConfig)
 
 				clusterObject, err := provisioning.CreateProvisioningCluster(r.client, *rke2Provider, testConfig, hostnamePools)
+				reports.TimeoutClusterReport(clusterObject, err)
 				require.NoError(r.T(), err)
 
 				provisioning.VerifyCluster(r.T(), r.client, testConfig, clusterObject)

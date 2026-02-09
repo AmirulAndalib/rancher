@@ -11,15 +11,15 @@ import (
 	"strings"
 	"time"
 
-	v32 "github.com/rancher/rancher/pkg/apis/project.cattle.io/v3"
-
 	errorsutil "github.com/pkg/errors"
+	v32 "github.com/rancher/rancher/pkg/apis/project.cattle.io/v3"
 	"github.com/rancher/rancher/pkg/auth/tokens"
 	"github.com/rancher/rancher/pkg/controllers/managementlegacy/compose/common"
 	hCommon "github.com/rancher/rancher/pkg/controllers/managementuserlegacy/helm/common"
 	corev1 "github.com/rancher/rancher/pkg/generated/norman/core/v1"
 	mgmtv3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	v3 "github.com/rancher/rancher/pkg/generated/norman/project.cattle.io/v3"
+	"github.com/rancher/rancher/pkg/jailer"
 	"github.com/rancher/rancher/pkg/ref"
 	"github.com/rancher/rancher/pkg/systemaccount"
 	"github.com/rancher/rancher/pkg/types/config"
@@ -135,9 +135,8 @@ func (l *Lifecycle) Updated(obj *v3.App) (runtime.Object, error) {
 		return obj, nil
 	}
 	// always refresh app to avoid updating app twice
-	_, projectName := ref.Parse(obj.Spec.ProjectName)
 	var err error
-	obj, err = l.AppsLister.Get(projectName, obj.Name)
+	obj, err = l.AppsLister.Get(obj.Namespace, obj.Name)
 	if err != nil {
 		return obj, err
 	}
@@ -150,7 +149,7 @@ func (l *Lifecycle) Updated(obj *v3.App) (runtime.Object, error) {
 	}
 
 	obj = newObj.(*v3.App)
-	appRevisionClient := l.AppRevisionGetter.AppRevisions(projectName)
+	appRevisionClient := l.AppRevisionGetter.AppRevisions(obj.Namespace)
 	if obj.Spec.AppRevisionName != "" {
 		currentRevision, err := appRevisionClient.Get(obj.Spec.AppRevisionName, metav1.GetOptions{})
 		if err != nil {
@@ -456,6 +455,12 @@ func (l *Lifecycle) writeKubeConfig(obj *v3.App, kubePath string, remove bool) (
 
 	if err := clientcmd.WriteToFile(*kubeConfig, kubePath); err != nil {
 		return "", err
+	}
+	if os.Getenv("CATTLE_DEV_MODE") == "" {
+		err := jailer.SetJailOwnership(kubePath)
+		if err != nil {
+			return "", err
+		}
 	}
 	tokenID, _ := tokens.SplitTokenParts(token)
 	return tokenID, nil

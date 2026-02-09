@@ -132,6 +132,18 @@ var (
 		true,
 		true,
 		true)
+	ProvisioningPreBootstrap = newFeature(
+		"provisioningprebootstrap",
+		"Support running pre-bootstrap workloads on downstream clusters",
+		false,
+		false,
+		true)
+	CleanStaleSecrets = newFeature(
+		"clean-stale-secrets",
+		"Remove unused impersonation secrets from the cattle-impersonation namespace",
+		true,
+		false,
+		true)
 )
 
 type Feature struct {
@@ -157,6 +169,12 @@ func InitializeFeatures(featuresClient managementv3.FeatureClient, featureArgs s
 
 	if featuresClient == nil {
 		return
+	}
+
+	// external-rules feature flag was removed in 2.9. We need to delete it for users upgrading from 2.8.
+	err := featuresClient.Delete("external-rules", &metav1.DeleteOptions{})
+	if err != nil && !errors.IsNotFound(err) {
+		logrus.Errorf("unable to delete external-rules feature: %v", err)
 	}
 
 	// creates any features in map that do not exist, updates features with new default value

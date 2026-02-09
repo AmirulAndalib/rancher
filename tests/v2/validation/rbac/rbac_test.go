@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rancher/rancher/tests/v2/actions/projects"
+	"github.com/rancher/rancher/tests/v2/actions/rbac"
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	"github.com/rancher/shepherd/extensions/clusters"
-	"github.com/rancher/shepherd/extensions/projects"
-	"github.com/rancher/shepherd/extensions/rbac"
 	"github.com/rancher/shepherd/extensions/users"
 	"github.com/rancher/shepherd/pkg/config"
 	"github.com/rancher/shepherd/pkg/session"
@@ -46,7 +46,6 @@ func (rb *RBTestSuite) SetupSuite() {
 	require.NoError(rb.T(), err, "Error getting cluster ID")
 	rb.cluster, err = rb.client.Management.Cluster.ByID(clusterID)
 	require.NoError(rb.T(), err)
-
 }
 
 func (rb *RBTestSuite) sequentialTestRBAC(role rbac.Role, member string, user *management.User) {
@@ -74,6 +73,9 @@ func (rb *RBTestSuite) sequentialTestRBAC(role rbac.Role, member string, user *m
 
 	rb.Run("Validating Global Role Binding is created for "+role.String(), func() {
 		rbac.VerifyGlobalRoleBindingsForUser(rb.T(), user, rb.client)
+	})
+	rb.Run("Validating corresponding role bindings for users", func() {
+		rbac.VerifyRoleBindingsForUser(rb.T(), user, rb.client, rb.cluster.ID, role)
 	})
 	rb.Run("Validating if "+role.String()+" can list any downstream clusters", func() {
 		rbac.VerifyUserCanListCluster(rb.T(), rb.client, standardClient, rb.cluster.ID, role)

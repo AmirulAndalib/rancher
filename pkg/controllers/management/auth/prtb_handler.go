@@ -12,6 +12,7 @@ import (
 	"github.com/rancher/rancher/pkg/user"
 	"github.com/sirupsen/logrus"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -138,7 +139,7 @@ func (p *prtbLifecycle) reconcileSubject(binding *v3.ProjectRoleTemplateBinding)
 		return binding, nil
 	}
 
-	return nil, fmt.Errorf("Binding %v has no subject", binding.Name)
+	return nil, fmt.Errorf("binding %s has no subject", binding.Name)
 }
 
 // When a PRTB is created or updated, translate it into several k8s roles and bindings to actually enforce the RBAC.
@@ -153,7 +154,7 @@ func (p *prtbLifecycle) reconcileBindings(binding *v3.ProjectRoleTemplateBinding
 
 	parts := strings.SplitN(binding.ProjectName, ":", 2)
 	if len(parts) < 2 {
-		return fmt.Errorf("cannot determine project and cluster from %v", binding.ProjectName)
+		return fmt.Errorf("cannot determine project and cluster from %s", binding.ProjectName)
 	}
 
 	clusterName := parts[0]
@@ -163,7 +164,7 @@ func (p *prtbLifecycle) reconcileBindings(binding *v3.ProjectRoleTemplateBinding
 		return err
 	}
 	if proj == nil {
-		return fmt.Errorf("cannot create binding because project %v was not found", projectName)
+		return fmt.Errorf("cannot create binding because project %s was not found", projectName)
 	}
 
 	cluster, err := p.clusterLister.Get("", clusterName)
@@ -171,20 +172,24 @@ func (p *prtbLifecycle) reconcileBindings(binding *v3.ProjectRoleTemplateBinding
 		return err
 	}
 	if cluster == nil {
-		return fmt.Errorf("cannot create binding because cluster %v was not found", clusterName)
+		return fmt.Errorf("cannot create binding because cluster %s was not found", clusterName)
 	}
 
-	roleName := strings.ToLower(fmt.Sprintf("%v-clustermember", clusterName))
+	roleName := strings.ToLower(fmt.Sprintf("%s-clustermember", clusterName))
 	// if roletemplate is not builtin, check if it's inherited/cloned
 	isOwnerRole, err := p.mgr.checkReferencedRoles(binding.RoleTemplateName, projectContext, 0)
 	if err != nil {
+		if apierrors.IsNotFound(err) {
+			logrus.Warnf("ProjectRoleTemplateBinding %s sets a non-existing role template %s. Skipping.", binding.Name, binding.RoleTemplateName)
+			return nil
+		}
 		return err
 	}
 	var projectRoleName string
 	if isOwnerRole {
-		projectRoleName = strings.ToLower(fmt.Sprintf("%v-projectowner", projectName))
+		projectRoleName = strings.ToLower(fmt.Sprintf("%s-projectowner", projectName))
 	} else {
-		projectRoleName = strings.ToLower(fmt.Sprintf("%v-projectmember", projectName))
+		projectRoleName = strings.ToLower(fmt.Sprintf("%s-projectmember", projectName))
 	}
 
 	subject, err := pkgrbac.BuildSubjectFromRTB(binding)

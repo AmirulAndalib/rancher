@@ -5,11 +5,12 @@ package provisioning
 import (
 	"testing"
 
+	"github.com/rancher/rancher/tests/v2/actions/provisioning"
+	"github.com/rancher/rancher/tests/v2/actions/provisioninginput"
+	"github.com/rancher/rancher/tests/v2/actions/reports"
 	"github.com/rancher/shepherd/clients/rancher"
 	management "github.com/rancher/shepherd/clients/rancher/generated/management/v3"
 	"github.com/rancher/shepherd/extensions/clusters/aks"
-	"github.com/rancher/shepherd/extensions/provisioning"
-	"github.com/rancher/shepherd/extensions/provisioninginput"
 	"github.com/rancher/shepherd/extensions/users"
 	password "github.com/rancher/shepherd/extensions/users/passwordgenerator"
 	"github.com/rancher/shepherd/pkg/config"
@@ -75,6 +76,7 @@ func (h *HostedAKSClusterProvisioningTestSuite) TestProvisioningHostedAKS() {
 		config.LoadConfig(aks.AKSClusterConfigConfigurationFileKey, &aksClusterConfig)
 
 		clusterObject, err := provisioning.CreateProvisioningAKSHostedCluster(tt.client, aksClusterConfig)
+		reports.TimeoutRKEReport(clusterObject, err)
 		require.NoError(h.T(), err)
 
 		provisioning.VerifyHostedCluster(h.T(), tt.client, clusterObject)

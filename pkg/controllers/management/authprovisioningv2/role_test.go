@@ -4,17 +4,19 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	apisv3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
 	apisv1 "github.com/rancher/rancher/pkg/apis/provisioning.cattle.io/v1"
 	provisioningv1 "github.com/rancher/rancher/pkg/apis/provisioning.cattle.io/v1"
 	v3 "github.com/rancher/rancher/pkg/generated/norman/management.cattle.io/v3"
 	"github.com/rancher/wrangler/v3/pkg/generic"
 	"github.com/rancher/wrangler/v3/pkg/generic/fake"
+	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 	rbacv1 "k8s.io/api/rbac/v1"
 	v1 "k8s.io/api/rbac/v1"
 	apierror "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
@@ -299,6 +301,29 @@ func Test_OnRemoveClusterRoleBinding(t *testing.T) {
 	}
 }
 
+type mockIndexGetter []runtime.Object
+
+func (m mockIndexGetter) GetByIndex(schema.GroupVersionKind, string, string) ([]runtime.Object, error) {
+	return m, nil
+}
+
+func Test_getResourceNames_sorted(t *testing.T) {
+	objs := []runtime.Object{
+		&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "b3"}},
+		&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "c5"}},
+		&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "b4"}},
+		&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "a2"}},
+		&rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{Name: "a1"}},
+	}
+	want := []string{"a1", "a2", "b3", "b4", "c5"}
+
+	got, err := getResourceNames(mockIndexGetter(objs), resourceMatch{}, &provisioningv1.Cluster{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assert.Equal(t, want, got)
+}
+
 func createNameAndNamespaceAnnotation(n string) map[string]string {
 	return map[string]string{clusterNameLabel: n, clusterNamespaceLabel: n}
 }
@@ -354,4 +379,101 @@ func newDeletingMgmtCuster() *v3.Cluster {
 	c := &v3.Cluster{}
 	c.DeletionTimestamp = &metav1.Time{}
 	return c
+}
+
+func Test_isProtectedRBACResource(t *testing.T) {
+	tests := []struct {
+		name string
+		obj  runtime.Object
+		want bool
+	}{
+		{
+			name: "role without required annotations",
+			obj: &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{
+				Name: "myrole", Namespace: "test",
+			}},
+			want: false,
+		},
+		{
+			name: "role with partial annotations",
+			obj: &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{
+				Name: "myrole", Namespace: "test",
+				Annotations: map[string]string{
+					"cluster.cattle.io/name": "test",
+				},
+			}},
+			want: false,
+		},
+		{
+			name: "role with expected annotations",
+			obj: &rbacv1.Role{ObjectMeta: metav1.ObjectMeta{
+				Name: "myrole", Namespace: "test",
+				Annotations: map[string]string{
+					"cluster.cattle.io/name":      "test",
+					"cluster.cattle.io/namespace": "test",
+				},
+			}},
+			want: true,
+		},
+
+		{
+			name: "rolebinding without required annotations",
+			obj: &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{
+				Name: "myrole", Namespace: "test",
+			}},
+			want: false,
+		},
+		{
+			name: "rolebinding with expected annotations",
+			obj: &rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{
+				Name: "myrole", Namespace: "test",
+				Annotations: map[string]string{
+					"cluster.cattle.io/name":      "test",
+					"cluster.cattle.io/namespace": "test",
+				},
+			}},
+			want: true,
+		},
+
+		{
+			name: "clusterrole without annotations",
+			obj: &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{
+				Name: "myrole",
+			}},
+			want: false,
+		},
+		{
+			name: "clusterrole with expected annotations",
+			obj: &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{
+				Name: "myrole",
+				Annotations: map[string]string{
+					"cluster.cattle.io/name": "test",
+				},
+			}},
+			want: true,
+		},
+
+		{
+			name: "clusterrolebinding without annotations",
+			obj: &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{
+				Name: "myrole",
+			}},
+			want: false,
+		},
+		{
+			name: "clusterrolebinding with expected annotations",
+			obj: &rbacv1.ClusterRole{ObjectMeta: metav1.ObjectMeta{
+				Name: "myrole",
+				Annotations: map[string]string{
+					"cluster.cattle.io/name": "test",
+				},
+			}},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equalf(t, tt.want, isProtectedRBACResource(tt.obj), "isProtectedRBACResource(%v)", tt.obj)
+		})
+	}
 }

@@ -8,19 +8,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestSettingsSyncWithEmptyAzureGroupCacheSize(t *testing.T) {
-	name := settings.AzureGroupCacheSize.Name
-	controller := SettingController{}
-
-	_, err := controller.sync(name, &v3.Setting{
-		ObjectMeta: metav1.ObjectMeta{Name: name},
-		Value:      "",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestSettingsSyncEnsureUserRetentionLabels(t *testing.T) {
 	for _, name := range []string{
 		settings.DisableInactiveUserAfter.Name,

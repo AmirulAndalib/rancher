@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/crewjam/saml"
+	"github.com/golang-jwt/jwt"
 	"github.com/gorilla/mux"
 	responsewriter "github.com/rancher/apiserver/pkg/middleware"
 	v32 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
@@ -28,6 +29,7 @@ import (
 	log "github.com/sirupsen/logrus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/util/retry"
 )
 
 type IDPMetadata struct {
@@ -266,19 +268,25 @@ func (s *Provider) getSamlPrincipals(config *v32.SamlConfig, samlData map[string
 func (s *Provider) HandleSamlAssertion(w http.ResponseWriter, r *http.Request, assertion *saml.Assertion) {
 	var groupPrincipals []v3.Principal
 	var userPrincipal v3.Principal
-
-	if relayState := r.Form.Get("RelayState"); relayState != "" {
-		// delete the cookie
-		s.clientState.DeleteState(w, r, relayState)
-	}
-
+	var userID string
 	redirectURL := s.clientState.GetState(r, "Rancher_FinalRedirectURL")
 	rancherAction := s.clientState.GetState(r, "Rancher_Action")
 	if rancherAction == loginAction {
 		redirectURL += "/login?"
 	} else if rancherAction == testAndEnableAction {
+		var err error
+		userID, err = s.getUserIdFromRelayStateCookie(r)
+		if err != nil {
+			log.Errorf("SAML: Error getting state from cookie: %v", err)
+			http.Redirect(w, r, redirectURL+"errorCode=500", http.StatusFound)
+			return
+		}
 		// the first query param is config=saml_provider_name set by UI
 		redirectURL += "&"
+	}
+	if relayState := r.Form.Get("RelayState"); relayState != "" {
+		// delete the cookie
+		s.clientState.DeleteState(w, r, relayState)
 	}
 
 	samlData := make(map[string][]string)
@@ -323,7 +331,6 @@ func (s *Provider) HandleSamlAssertion(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 
-	userID := s.clientState.GetState(r, "Rancher_UserID")
 	if userID != "" && rancherAction == testAndEnableAction {
 		user, err := s.userMGR.SetPrincipalOnCurrentUserByUserID(userID, userPrincipal)
 		if err != nil && user == nil {
@@ -353,7 +360,6 @@ func (s *Provider) HandleSamlAssertion(w http.ResponseWriter, r *http.Request, a
 			http.Redirect(w, r, redirectURL+"errorCode=500", http.StatusFound)
 		}
 		// delete the cookies
-		s.clientState.DeleteState(w, r, "Rancher_UserID")
 		s.clientState.DeleteState(w, r, "Rancher_Action")
 		redirectURL := s.clientState.GetState(r, "Rancher_FinalRedirectURL")
 		s.clientState.DeleteState(w, r, "Rancher_FinalRedirectURL")
@@ -382,9 +388,11 @@ func (s *Provider) HandleSamlAssertion(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 
+	loginTime := time.Now()
 	userExtraInfo := s.GetUserExtraAttributes(userPrincipal)
-	err = s.tokenMGR.UserAttributeCreateOrUpdate(user.Name, userPrincipal.Provider, groupPrincipals, userExtraInfo)
-	if err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		return s.tokenMGR.UserAttributeCreateOrUpdate(user.Name, userPrincipal.Provider, groupPrincipals, userExtraInfo, loginTime)
+	}); err != nil {
 		log.Errorf("SAML: Failed creating or updating userAttribute with error: %v", err)
 		http.Redirect(w, r, redirectURL+"errorCode=500", http.StatusFound)
 		return
@@ -491,4 +499,29 @@ func (s *Provider) setRancherToken(w http.ResponseWriter, tokenMGR *tokens.Manag
 	http.SetCookie(w, tokenCookie)
 
 	return nil
+}
+
+func (s *Provider) getUserIdFromRelayStateCookie(r *http.Request) (string, error) {
+	userID := ""
+	// The state is stored in a cookie, which has the relay state as the key and a JWT token containing the userID as the value
+	if relayState := r.Form.Get("RelayState"); relayState != "" {
+		relayStateCookie := s.clientState.GetState(r, relayState)
+		jwtParser := jwt.Parser{
+			ValidMethods: []string{jwt.SigningMethodHS256.Name},
+		}
+		token, err := jwtParser.Parse(relayStateCookie, func(t *jwt.Token) (interface{}, error) {
+			secretBlock := x509.MarshalPKCS1PrivateKey(s.serviceProvider.Key)
+			return secretBlock, nil
+		})
+		if err != nil {
+			return "", fmt.Errorf("error parsing relay state token: %w", err)
+		}
+		if !token.Valid {
+			return "", fmt.Errorf("invalid token")
+		}
+		claims := token.Claims.(jwt.MapClaims)
+		userID, _ = claims[rancherUserID].(string)
+	}
+
+	return userID, nil
 }

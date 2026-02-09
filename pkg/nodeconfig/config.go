@@ -2,6 +2,7 @@ package nodeconfig
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/rancher/rancher/pkg/encryptedstore"
 	v1 "github.com/rancher/rancher/pkg/generated/norman/core/v1"
 	"github.com/rancher/rancher/pkg/jailer"
+	"github.com/rancher/rancher/pkg/settings"
 	"github.com/sirupsen/logrus"
 	k8serror "k8s.io/apimachinery/pkg/api/errors"
 )
@@ -149,7 +151,7 @@ func (m *NodeConfig) Save() error {
 
 	m.cm[configKey] = extractedConfig
 
-	if err = m.store.Set(m.id, m.cm); err != nil {
+	if err = m.store.Set(m.id, m.cm, nil); err != nil {
 		m.cm = nil
 		return err
 	}
@@ -167,7 +169,17 @@ func (m *NodeConfig) Restore() error {
 		return nil
 	}
 
-	return extractConfig(m.fullMachinePath, data)
+	if err := extractConfig(m.fullMachinePath, data); err != nil {
+		return fmt.Errorf("error extracting node config into %s: %w", m.fullMachinePath, err)
+	}
+
+	if os.Getenv("CATTLE_DEV_MODE") == "" && settings.UnprivilegedJailUser.Get() == "true" {
+		if err := jailer.SetJailOwnership(m.fullMachinePath); err != nil {
+			return fmt.Errorf("error updating perms for extracted config dir %s: %w", m.fullMachinePath, err)
+		}
+	}
+
+	return nil
 }
 
 // UpdateAmazonAuth updates the machine config.json file on disk with the most
@@ -300,8 +312,10 @@ func buildBaseHostDir(nodeName string, clusterID string) (string, string, error)
 	var fullMachinePath string
 	var jailDir string
 
+	devMode := os.Getenv("CATTLE_DEV_MODE") != ""
+
 	suffix := filepath.Join("node", "nodes", nodeName)
-	if dm := os.Getenv("CATTLE_DEV_MODE"); dm != "" {
+	if devMode {
 		fullMachinePath = filepath.Join(defaultCattleHome, suffix)
 		jailDir = fullMachinePath
 	} else {
@@ -309,5 +323,17 @@ func buildBaseHostDir(nodeName string, clusterID string) (string, string, error)
 		jailDir = filepath.Join("/management-state", suffix)
 	}
 
-	return jailDir, fullMachinePath, os.MkdirAll(fullMachinePath, 0740)
+	err := os.MkdirAll(fullMachinePath, 0o740)
+	if err != nil {
+		return "", "", fmt.Errorf("error creating directory: %w", err)
+	}
+
+	if !devMode {
+		err = jailer.SetJailOwnership(fullMachinePath)
+		if err != nil {
+			return "", "", fmt.Errorf("error updating perms for %s: %w", fullMachinePath, err)
+		}
+	}
+
+	return jailDir, fullMachinePath, nil
 }

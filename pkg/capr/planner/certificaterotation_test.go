@@ -10,6 +10,8 @@ import (
 	"github.com/rancher/rancher/pkg/capr"
 	"github.com/rancher/rancher/pkg/provisioningv2/image"
 	"github.com/stretchr/testify/assert"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	capi "sigs.k8s.io/cluster-api/api/v1beta1"
 )
 
 func Test_shouldRotateEntry(t *testing.T) {
@@ -52,6 +54,190 @@ func Test_shouldRotateEntry(t *testing.T) {
 	}
 }
 
+func Test_certificateRotationOrderedEntriesPlan(t *testing.T) {
+	tests := []struct {
+		name                             string
+		clusterPlan                      *plan.Plan
+		expectedNumberOfCollectedEntries int
+		expectedOrder                    []string
+	}{
+		{
+			name: "one all-in-one",
+			clusterPlan: &plan.Plan{
+				Machines: map[string]*capi.Machine{
+					"node1": {ObjectMeta: metav1.ObjectMeta{Name: "node1"}},
+				},
+				Metadata: map[string]*plan.Metadata{
+					"node1": {Labels: map[string]string{capr.WorkerRoleLabel: "true", capr.ControlPlaneRoleLabel: "true", capr.EtcdRoleLabel: "true"}},
+				},
+			},
+			expectedNumberOfCollectedEntries: 1,
+			expectedOrder: []string{
+				"node1",
+			},
+		},
+		{
+			name: "various dedicated roles",
+			clusterPlan: &plan.Plan{
+				Machines: map[string]*capi.Machine{
+					"node1": {ObjectMeta: metav1.ObjectMeta{Name: "node1"}},
+					"node2": {ObjectMeta: metav1.ObjectMeta{Name: "node2"}},
+					"node3": {ObjectMeta: metav1.ObjectMeta{Name: "node3"}},
+				},
+				Metadata: map[string]*plan.Metadata{
+					"node1": {Labels: map[string]string{capr.WorkerRoleLabel: "true"}},
+					"node2": {Labels: map[string]string{capr.ControlPlaneRoleLabel: "true"}},
+					"node3": {Labels: map[string]string{capr.EtcdRoleLabel: "true"}},
+				},
+			},
+			expectedNumberOfCollectedEntries: 3,
+			expectedOrder: []string{
+				"node3",
+				"node2",
+				"node1",
+			},
+		},
+		{
+			name: "combined control and dedicated worker roles",
+			clusterPlan: &plan.Plan{
+				Machines: map[string]*capi.Machine{
+					"node1": {ObjectMeta: metav1.ObjectMeta{Name: "node1"}},
+					"node2": {ObjectMeta: metav1.ObjectMeta{Name: "node2"}},
+					"node3": {ObjectMeta: metav1.ObjectMeta{Name: "node3"}},
+					"node4": {ObjectMeta: metav1.ObjectMeta{Name: "node4"}},
+					"node5": {ObjectMeta: metav1.ObjectMeta{Name: "node5"}},
+					"node6": {ObjectMeta: metav1.ObjectMeta{Name: "node6"}},
+				},
+				Metadata: map[string]*plan.Metadata{
+					"node1": {Labels: map[string]string{capr.ControlPlaneRoleLabel: "true", capr.EtcdRoleLabel: "true"}},
+					"node2": {Labels: map[string]string{capr.WorkerRoleLabel: "true"}},
+					"node3": {Labels: map[string]string{capr.ControlPlaneRoleLabel: "true", capr.EtcdRoleLabel: "true"}},
+					"node4": {Labels: map[string]string{capr.WorkerRoleLabel: "true"}},
+					"node5": {Labels: map[string]string{capr.ControlPlaneRoleLabel: "true", capr.EtcdRoleLabel: "true"}},
+					"node6": {Labels: map[string]string{capr.WorkerRoleLabel: "true"}},
+				},
+			},
+			expectedNumberOfCollectedEntries: 6,
+			expectedOrder: []string{
+				"node1",
+				"node3",
+				"node5",
+				"node2",
+				"node4",
+				"node6",
+			},
+		},
+		{
+			name: "etcd-worker and dedicated control and worker roles",
+			clusterPlan: &plan.Plan{
+				Machines: map[string]*capi.Machine{
+					"node1": {ObjectMeta: metav1.ObjectMeta{Name: "node1"}},
+					"node2": {ObjectMeta: metav1.ObjectMeta{Name: "node2"}},
+					"node3": {ObjectMeta: metav1.ObjectMeta{Name: "node3"}},
+					"node4": {ObjectMeta: metav1.ObjectMeta{Name: "node4"}},
+					"node5": {ObjectMeta: metav1.ObjectMeta{Name: "node5"}},
+					"node6": {ObjectMeta: metav1.ObjectMeta{Name: "node6"}},
+					"node7": {ObjectMeta: metav1.ObjectMeta{Name: "node7"}},
+				},
+				Metadata: map[string]*plan.Metadata{
+					"node1": {Labels: map[string]string{capr.WorkerRoleLabel: "true", capr.EtcdRoleLabel: "true"}},
+					"node2": {Labels: map[string]string{capr.WorkerRoleLabel: "true"}},
+					"node3": {Labels: map[string]string{capr.WorkerRoleLabel: "true", capr.EtcdRoleLabel: "true"}},
+					"node4": {Labels: map[string]string{capr.ControlPlaneRoleLabel: "true"}},
+					"node5": {Labels: map[string]string{capr.WorkerRoleLabel: "true"}},
+					"node6": {Labels: map[string]string{capr.WorkerRoleLabel: "true", capr.EtcdRoleLabel: "true"}},
+					"node7": {Labels: map[string]string{capr.EtcdRoleLabel: "true"}},
+				},
+			},
+			expectedNumberOfCollectedEntries: 7,
+			expectedOrder: []string{
+				"node1",
+				"node3",
+				"node6",
+				"node7",
+				"node4",
+				"node2",
+				"node5",
+			},
+		},
+		{
+			name: "control-worker and dedicated etcd and worker roles",
+			clusterPlan: &plan.Plan{
+				Machines: map[string]*capi.Machine{
+					"node1": {ObjectMeta: metav1.ObjectMeta{Name: "node1"}},
+					"node2": {ObjectMeta: metav1.ObjectMeta{Name: "node2"}},
+					"node3": {ObjectMeta: metav1.ObjectMeta{Name: "node3"}},
+					"node4": {ObjectMeta: metav1.ObjectMeta{Name: "node4"}},
+					"node5": {ObjectMeta: metav1.ObjectMeta{Name: "node5"}},
+					"node6": {ObjectMeta: metav1.ObjectMeta{Name: "node6"}},
+					"node7": {ObjectMeta: metav1.ObjectMeta{Name: "node7"}},
+				},
+				Metadata: map[string]*plan.Metadata{
+					"node1": {Labels: map[string]string{capr.WorkerRoleLabel: "true", capr.ControlPlaneRoleLabel: "true"}},
+					"node2": {Labels: map[string]string{capr.WorkerRoleLabel: "true"}},
+					"node3": {Labels: map[string]string{capr.WorkerRoleLabel: "true", capr.ControlPlaneRoleLabel: "true"}},
+					"node4": {Labels: map[string]string{capr.EtcdRoleLabel: "true"}},
+					"node5": {Labels: map[string]string{capr.WorkerRoleLabel: "true"}},
+					"node6": {Labels: map[string]string{capr.WorkerRoleLabel: "true"}},
+					"node7": {Labels: map[string]string{capr.WorkerRoleLabel: "true", capr.ControlPlaneRoleLabel: "true"}},
+				},
+			},
+			expectedNumberOfCollectedEntries: 7,
+			expectedOrder: []string{
+				"node4",
+				"node1",
+				"node3",
+				"node7",
+				"node2",
+				"node5",
+				"node6",
+			},
+		},
+		{
+			name: "traditional architecture with a no role node",
+			clusterPlan: &plan.Plan{
+				Machines: map[string]*capi.Machine{
+					"node1": {ObjectMeta: metav1.ObjectMeta{Name: "node1"}},
+					"node2": {ObjectMeta: metav1.ObjectMeta{Name: "node2"}},
+					"node3": {ObjectMeta: metav1.ObjectMeta{Name: "node3"}},
+					"node4": {ObjectMeta: metav1.ObjectMeta{Name: "node4"}},
+					"node5": {ObjectMeta: metav1.ObjectMeta{Name: "node5"}},
+					"node6": {ObjectMeta: metav1.ObjectMeta{Name: "node6"}},
+					"node7": {ObjectMeta: metav1.ObjectMeta{Name: "node7"}},
+				},
+				Metadata: map[string]*plan.Metadata{
+					"node1": {Labels: map[string]string{capr.EtcdRoleLabel: "true", capr.ControlPlaneRoleLabel: "true"}},
+					"node2": {Labels: map[string]string{capr.EtcdRoleLabel: "true", capr.ControlPlaneRoleLabel: "true"}},
+					"node3": {Labels: map[string]string{capr.EtcdRoleLabel: "true", capr.ControlPlaneRoleLabel: "true"}},
+					"node4": {Labels: map[string]string{capr.WorkerRoleLabel: "true"}},
+					"node5": {Labels: map[string]string{capr.WorkerRoleLabel: "true"}},
+					"node6": {Labels: map[string]string{capr.WorkerRoleLabel: "true"}},
+					"node7": {Labels: map[string]string{}},
+				},
+			},
+			expectedNumberOfCollectedEntries: 6,
+			expectedOrder: []string{
+				"node1",
+				"node2",
+				"node3",
+				"node4",
+				"node5",
+				"node6",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run((tt.name), func(t *testing.T) {
+			collected := collectOrderedCertificateRotationEntries(tt.clusterPlan)
+			assert.Equal(t, tt.expectedNumberOfCollectedEntries, len(collected))
+			for i, n := range tt.expectedOrder {
+				assert.Equal(t, n, collected[i].Machine.Name)
+			}
+		})
+	}
+}
+
 func Test_rotateCertificatesPlan(t *testing.T) {
 	type expected struct {
 		otiIndex   int
@@ -61,7 +247,7 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 	}
 
 	genericSetup := func(mp *mockPlanner) {
-		mp.clusterRegistrationTokenCache.EXPECT().GetByIndex(clusterRegToken, "somecluster").Return([]*v3.ClusterRegistrationToken{{Status: v3.ClusterRegistrationTokenStatus{Token: "lol"}}}, nil)
+		mp.clusterRegistrationTokenCache.EXPECT().GetByIndex(ClusterRegToken, "somecluster").Return([]*v3.ClusterRegistrationToken{{Status: v3.ClusterRegistrationTokenStatus{Token: "lol"}}}, nil)
 		mp.managementClusters.EXPECT().Get("somecluster").Return(&v3.Cluster{}, nil)
 	}
 
@@ -70,6 +256,7 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 		version             string
 		setup               func(mp *mockPlanner)
 		joinServer          string
+		os                  string
 		entryIsControlPlane bool
 		machineGlobalConfig *rkev1.GenericMap
 		expected            expected
@@ -80,9 +267,10 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 			version:             "v1.25.7+k3s1",
 			entryIsControlPlane: true,
 			joinServer:          "my-magic-joinserver",
+			os:                  capr.DefaultMachineOS,
 			setup:               genericSetup,
 			expected: expected{
-				otiIndex: 1,
+				otiIndex: 2,
 				oti: &[]plan.OneTimeInstruction{idempotentInstruction(
 					createTestControlPlane("v1.25.7+k3s1"),
 					"certificate-rotation/rm-kcm-cert",
@@ -94,7 +282,7 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 					},
 					[]string{},
 				)}[0],
-				otiCount:   7,
+				otiCount:   8,
 				joinServer: "my-magic-joinserver",
 			},
 		},
@@ -103,12 +291,13 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 			version:             "v1.25.7+rke2r1",
 			entryIsControlPlane: true,
 			joinServer:          "my-magic-joinserver",
+			os:                  capr.DefaultMachineOS,
 			setup:               genericSetup,
 			rotateCertificates: &rkev1.RotateCertificates{
 				Generation: 244,
 			},
 			expected: expected{
-				otiIndex: 1,
+				otiIndex: 2,
 				oti: &[]plan.OneTimeInstruction{idempotentInstruction(
 					createTestControlPlane("v1.25.7+rke2r1"),
 					"certificate-rotation/rm-kcm-cert",
@@ -120,7 +309,7 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 					},
 					[]string{},
 				)}[0],
-				otiCount:   10, // the extra removal instructions are for removing the static pod manifests for RKE2
+				otiCount:   11, // the extra removal instructions are for removing the static pod manifests for RKE2
 				joinServer: "my-magic-joinserver",
 			},
 		},
@@ -129,9 +318,10 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 			version:             "v1.25.7+k3s1",
 			entryIsControlPlane: true,
 			joinServer:          "my-magic-joinserver",
+			os:                  capr.DefaultMachineOS,
 			setup:               genericSetup,
 			expected: expected{
-				otiIndex: 3,
+				otiIndex: 4,
 				oti: &[]plan.OneTimeInstruction{idempotentInstruction(
 					createTestControlPlane("v1.25.7+k3s1"),
 					"certificate-rotation/rm-ks-cert",
@@ -143,7 +333,7 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 					},
 					[]string{},
 				)}[0],
-				otiCount:   7,
+				otiCount:   8,
 				joinServer: "my-magic-joinserver",
 			},
 		},
@@ -152,9 +342,10 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 			version:             "v1.25.7+rke2r1",
 			entryIsControlPlane: true,
 			joinServer:          "my-magic-joinserver",
+			os:                  capr.DefaultMachineOS,
 			setup:               genericSetup,
 			expected: expected{
-				otiIndex: 4,
+				otiIndex: 5,
 				oti: &[]plan.OneTimeInstruction{idempotentInstruction(
 					createTestControlPlane("v1.25.7+rke2r1"),
 					"certificate-rotation/rm-ks-cert",
@@ -166,7 +357,7 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 					},
 					[]string{},
 				)}[0],
-				otiCount:   10, // the extra removal instructions are for removing the static pod manifests for RKE2
+				otiCount:   11, // the extra removal instructions are for removing the static pod manifests for RKE2
 				joinServer: "my-magic-joinserver",
 			},
 		},
@@ -175,6 +366,7 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 			version:             "v1.25.7+rke2r1",
 			entryIsControlPlane: false,
 			joinServer:          "my-magic-joinserver",
+			os:                  capr.DefaultMachineOS,
 			expected: expected{
 				otiIndex: 1,
 				oti: &[]plan.OneTimeInstruction{idempotentRestartInstructions(
@@ -187,10 +379,27 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 			},
 		},
 		{
+			name:                "test rke2 Windows worker-only instruction",
+			version:             "v1.25.7+rke2r1",
+			entryIsControlPlane: false,
+			joinServer:          "my-magic-joinserver",
+			os:                  capr.WindowsMachineOS,
+			expected: expected{
+				otiIndex: 0,
+				oti: &[]plan.OneTimeInstruction{windowsIdempotentRestartInstructions(
+					"certificate-rotation/restart",
+					strconv.FormatInt(int64(0), 10),
+					"rke2")[0]}[0],
+				otiCount:   1,
+				joinServer: "",
+			},
+		},
+		{
 			name:                "test k3s worker-only instruction",
 			version:             "v1.25.7+k3s1",
 			entryIsControlPlane: false,
 			joinServer:          "my-magic-joinserver",
+			os:                  capr.DefaultMachineOS,
 			expected: expected{
 				otiIndex: 1,
 				oti: &[]plan.OneTimeInstruction{idempotentRestartInstructions(
@@ -207,6 +416,7 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 			version:             "v1.25.7+k3s1",
 			entryIsControlPlane: true,
 			joinServer:          "my-magic-joinserver",
+			os:                  capr.DefaultMachineOS,
 			setup:               genericSetup,
 			machineGlobalConfig: &rkev1.GenericMap{
 				Data: map[string]interface{}{
@@ -214,7 +424,7 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 				},
 			},
 			expected: expected{
-				otiIndex: 1,
+				otiIndex: 2,
 				oti: &[]plan.OneTimeInstruction{idempotentInstruction(
 					createTestControlPlane("v1.25.7+k3s1"),
 					"certificate-rotation/rm-kcm-cert",
@@ -226,7 +436,7 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 					},
 					[]string{},
 				)}[0],
-				otiCount:   7,
+				otiCount:   8,
 				joinServer: "my-magic-joinserver",
 			},
 		},
@@ -237,8 +447,9 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			mockPlanner := newMockPlanner(t, InfoFunctions{
-				SystemAgentImage: func() string { return "system-agent" },
-				ImageResolver:    image.ResolveWithControlPlane,
+				SystemAgentImage:      func() string { return "system-agent" },
+				ImageResolver:         image.ResolveWithControlPlane,
+				GetBootstrapManifests: func(plane *rkev1.RKEControlPlane) ([]plan.File, error) { return nil, nil },
 			})
 			if tt.setup != nil {
 				tt.setup(mockPlanner)
@@ -254,7 +465,7 @@ func Test_rotateCertificatesPlan(t *testing.T) {
 			} else {
 				controlPlane.Spec.RotateCertificates = &rkev1.RotateCertificates{}
 			}
-			entry := createTestPlanEntry(capr.DefaultMachineOS)
+			entry := createTestPlanEntry(tt.os)
 			if tt.entryIsControlPlane {
 				entry.Machine.Labels[capr.ControlPlaneRoleLabel] = "true"
 				entry.Metadata.Labels[capr.ControlPlaneRoleLabel] = "true"
